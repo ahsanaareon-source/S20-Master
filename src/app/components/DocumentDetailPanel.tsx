@@ -96,6 +96,12 @@ export default function DocumentDetailPanel({
   });
   const getDefaultObservationStatus = (isObjection = false): Observation['status'] =>
     isObjection ? 'reviewing' : 'no-action';
+  const normalizeDocumentKey = (value: unknown) =>
+    String(value || '')
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-+|-+$/g, '');
 
   useEffect(() => {
     setActiveTab('document');
@@ -186,7 +192,18 @@ Date of notice: [Insert date]`
     !document.sentDate &&
     (isUploadedConsultationDocument ? hasEmailDelivery : hasGeneratedPostalPack || hasEmailDelivery);
   const isConsultationDocument = !isProjectDocument;
-  const isLeaseholderNotice = isConsultationDocument && document.recipients?.some((recipient: any) => recipient.label === 'Leaseholders');
+  const observationEligibleKeys = ['notice-of-intention', 'statement-of-estimate', 'notice-of-reasons'];
+  const isObservationDocument =
+    isConsultationDocument &&
+    [
+      normalizeDocumentKey(document.stage),
+      normalizeDocumentKey(document.name),
+      normalizeDocumentKey(document.templateId),
+      normalizeDocumentKey(document.templateName)
+    ].some(value => observationEligibleKeys.includes(value));
+  const isLeaseholderNotice =
+    isObservationDocument &&
+    document.recipients?.some((recipient: any) => recipient.label === 'Leaseholders');
   const leaseholderRecipientCount = document.recipients?.find((recipient: any) => recipient.label === 'Leaseholders')?.count || 0;
   const postalRecipients = leaseholderRecords.slice(0, leaseholderRecipientCount || leaseholderRecords.length);
   const validEmailRecipients = postalRecipients.filter(recipient => Boolean(recipient.email?.trim()));
@@ -1166,25 +1183,27 @@ Date of notice: [Insert date]`
                   Delivery
                 </button>
               </li>
-              <li className="nav-item" role="presentation">
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeTab === 'observations'}
-                  className="nav-link border-0"
-                  onClick={() => setActiveTab('observations')}
-                  style={{
-                    backgroundColor: activeTab === 'observations' ? '#ffffff' : '#3b82c4',
-                    color: activeTab === 'observations' ? '#000000' : '#ffffff',
-                    borderRadius: '0',
-                    padding: '0.75rem 1.5rem',
-                    fontWeight: '400',
-                    borderLeft: activeTab === 'observations' ? '3px solid #ffffff' : 'none'
-                  }}
-                >
-                  Observations
-                </button>
-              </li>
+              {isObservationDocument && (
+                <li className="nav-item" role="presentation">
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={activeTab === 'observations'}
+                    className="nav-link border-0"
+                    onClick={() => setActiveTab('observations')}
+                    style={{
+                      backgroundColor: activeTab === 'observations' ? '#ffffff' : '#3b82c4',
+                      color: activeTab === 'observations' ? '#000000' : '#ffffff',
+                      borderRadius: '0',
+                      padding: '0.75rem 1.5rem',
+                      fontWeight: '400',
+                      borderLeft: activeTab === 'observations' ? '3px solid #ffffff' : 'none'
+                    }}
+                  >
+                    Observations
+                  </button>
+                </li>
+              )}
             </ul>
           </div>
         )}
@@ -1270,7 +1289,10 @@ Date of notice: [Insert date]`
               <div className="alert alert-secondary mb-4 d-flex align-items-start gap-2">
                 <Info size={16} className="mt-1" />
                 <div className="small">
-                  Uploaded documents are email-only in this prototype. Observations can still be captured in the same way after issue.
+                  Uploaded documents are email-only in this prototype.
+                  {isObservationDocument
+                    ? ' Observations can still be captured in the same way after issue.'
+                    : ''}
                 </div>
               </div>
             )}
@@ -1536,7 +1558,7 @@ Date of notice: [Insert date]`
           </div>
         )}
 
-        {activeTab === 'observations' && isConsultationDocument && (
+        {activeTab === 'observations' && isObservationDocument && (
           <div>
             {aiSuggestionsSection}
 

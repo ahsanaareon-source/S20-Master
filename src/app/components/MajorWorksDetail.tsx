@@ -1,12 +1,13 @@
 import { useState, useRef, useEffect, useMemo } from 'react';
 import { Download, MapPin, Users, FileText, Clipboard, Briefcase, MessageSquare, PoundSterling, CheckCircle, AlertTriangle, AlertCircle, Clock, ChevronDown, ChevronUp, Hourglass, Search, Plus, ChevronLeft, ChevronRight, FilePlus, Check, X as XIcon, X, Info, Building2, Archive, Link as LinkIcon, Filter } from 'lucide-react';
+import { CartesianGrid, Line, LineChart, XAxis, YAxis } from 'recharts';
 import editIcon from '../../assets/fbd9969709d1864a127070fa8f50a71f1d1c78cb.png';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import NewDocumentModal from './NewDocumentModal';
 import NewProjectDocumentModal from './NewProjectDocumentModal';
 import DocumentDetailPanel from './DocumentDetailPanel';
 import ConfirmationModal from './ConfirmationModal';
 import MajorWorksForm from './MajorWorksForm';
+import { ChartContainer, ChartTooltip, ChartTooltipContent, type ChartConfig } from './ui/line-charts-4';
 import { generateMajorWorkDetailPDF } from '@/utils/pdfGenerator';
 import { CONSULTATION_STAGE_LABELS, type ConsultationStage, type Observation } from '@/types';
 
@@ -1617,13 +1618,19 @@ Date of notice: [Insert date]`;
   
   const [stages, setStages] = useState<Stage[]>(getInitialStages());
 
-  const respondedLeaseholderCount = new Set(observations.map(observation => observation.leaseholderId)).size;
-  const totalObservationEntries = observations.length;
-  const objectionCount = observations.filter(observation => observation.isObjection).length;
+  const leaseholderObservations = useMemo(
+    () => observations.filter(observation =>
+      ['notice-of-intention', 'statement-of-estimate', 'notice-of-reasons'].includes(observation.stage)
+    ),
+    [observations]
+  );
+  const respondedLeaseholderCount = new Set(leaseholderObservations.map(observation => observation.leaseholderId)).size;
+  const totalObservationEntries = leaseholderObservations.length;
+  const objectionCount = leaseholderObservations.filter(observation => observation.isObjection).length;
   const observationResponseRate = leaseholderCount > 0
     ? Math.min(Math.round((respondedLeaseholderCount / leaseholderCount) * 100), 100)
     : 0;
-  const latestObservation = observations.reduce<Observation | null>((latest, observation) => {
+  const latestObservation = leaseholderObservations.reduce<Observation | null>((latest, observation) => {
     if (!latest) {
       return observation;
     }
@@ -1638,50 +1645,654 @@ Date of notice: [Insert date]`;
         year: 'numeric'
       })
     : 'No responses yet';
+  const unresolvedObservationCount = leaseholderObservations.filter(observation => observation.status !== 'addressed').length;
+  const addressedObservationCount = leaseholderObservations.filter(observation => observation.status === 'addressed').length;
+  const isObservationPriorityStage = ['notice-of-intention', 'first-notice', 'tenders', 'statement-of-estimate', 'notice-of-reasons'].includes(currentConsultationStage);
+  const observationNoticeSummaries = useMemo(() => {
+    const grouped = leaseholderObservations.reduce<Record<string, {
+      key: string;
+      documentId?: string | number;
+      documentName: string;
+      stage: ConsultationStage;
+      responses: number;
+      objections: number;
+      latestReceivedOn: string;
+    }>>((acc, observation) => {
+      const key = String(observation.documentId ?? observation.documentName ?? observation.stage);
+      const existing = acc[key];
 
-  const chartData = (() => {
-    const weeks = Array.from({ length: 5 }, (_, index) => {
-      const weekStart = new Date();
-      weekStart.setHours(0, 0, 0, 0);
-      weekStart.setDate(weekStart.getDate() - (4 - index) * 7);
-      return weekStart;
-    });
+      if (!existing) {
+        acc[key] = {
+          key,
+          documentId: observation.documentId,
+          documentName: observation.documentName || CONSULTATION_STAGE_LABELS[observation.stage],
+          stage: observation.stage,
+          responses: 1,
+          objections: observation.isObjection ? 1 : 0,
+          latestReceivedOn: observation.receivedOn
+        };
+        return acc;
+      }
 
-    const actualCounts = weeks.map((weekStart, index) => {
-      const weekEnd = new Date(weekStart);
-      weekEnd.setDate(weekEnd.getDate() + 7);
+      existing.responses += 1;
+      if (observation.isObjection) {
+        existing.objections += 1;
+      }
+      if (new Date(observation.receivedOn).getTime() > new Date(existing.latestReceivedOn).getTime()) {
+        existing.latestReceivedOn = observation.receivedOn;
+      }
 
-      const count = observations.filter(observation => {
-        const receivedOn = new Date(observation.receivedOn);
-        if (index === weeks.length - 1) {
-          return receivedOn >= weekStart;
+      return acc;
+    }, {});
+
+    return Object.values(grouped)
+      .sort((a, b) => new Date(b.latestReceivedOn).getTime() - new Date(a.latestReceivedOn).getTime())
+      .slice(0, 3);
+  }, [leaseholderObservations]);
+
+  const currentStageDocuments = useMemo(
+    () => documents.filter((document: any) => document.category === 'consultation'),
+    [documents]
+  );
+
+  const contractorQuoteData = useMemo(() => {
+    if (isNewWork) {
+      return null;
+    }
+
+    const stageFallbackMap: Record<string, ConsultationStage> = {
+      'notice of intention': 'notice-of-intention',
+      'first notice': 'first-notice',
+      'tender': 'tenders',
+      'tenders': 'tenders',
+      'statement of estimate': 'statement-of-estimate',
+      'notice of reasons': 'notice-of-reasons',
+      'ongoing works': 'ongoing-works',
+      'completion': 'completion'
+    };
+
+    const linkedQuoteIssueIds = linkedIssues.length > 0 ? linkedIssues.slice(0, 4) : ['1', '11', '19', '20'];
+    const linkedQuoteIssues = linkedQuoteIssueIds
+      .map((issueId) => allIssues.find(issue => issue.id === issueId))
+      .filter(Boolean);
+
+    const quoteRows = [
+      {
+        contractor: 'Apex Roofing',
+        issueRef: linkedQuoteIssues[0]?.issueRef ?? '#IS2001',
+        requestTitle: 'Riverside Roof major works quote',
+        status: 'Quote received',
+        quoteValue: '£118,400',
+        nominatedByLeaseholders: false
+      },
+      {
+        contractor: 'Premier Restoration',
+        issueRef: linkedQuoteIssues[1]?.issueRef ?? '#IS2011',
+        requestTitle: 'Riverside Roof major works quote',
+        status: 'Quote received',
+        quoteValue: '£124,900',
+        nominatedByLeaseholders: true
+      },
+      {
+        contractor: 'BuildRight',
+        issueRef: linkedQuoteIssues[2]?.issueRef ?? '#IS2019',
+        requestTitle: 'Riverside Roof major works quote',
+        status: 'Clarification pending',
+        quoteValue: '£131,250',
+        nominatedByLeaseholders: false
+      },
+      {
+        contractor: 'SafeAccess Group',
+        issueRef: linkedQuoteIssues[3]?.issueRef ?? '#IS2020',
+        requestTitle: 'Riverside Roof major works quote',
+        status: 'Requested',
+        quoteValue: null,
+        nominatedByLeaseholders: false
+      },
+      {
+        contractor: 'Vertex Roofing',
+        issueRef: linkedQuoteIssues[4]?.issueRef ?? '#IS2021',
+        requestTitle: 'Riverside Roof major works quote',
+        status: 'Requested',
+        quoteValue: null,
+        nominatedByLeaseholders: false
+      }
+    ];
+
+    const currentStage =
+      work.formData?.consultationStage ||
+      stageFallbackMap[(work.stage || '').toLowerCase()] ||
+      'notice-of-intention';
+    const quoteAccepted = work.formData?.lowestQuoteAccepted ?? lowestQuoteAccepted;
+    const visibleRows =
+      currentStage === 'notice-of-intention'
+        ? quoteRows.slice(0, 3).map((row) => ({
+            ...row,
+            status: 'Requested',
+            quoteValue: null
+          }))
+        : currentStage === 'tenders' || currentStage === 'statement-of-estimate' || currentStage === 'notice-of-reasons' || currentStage === 'ongoing-works' || currentStage === 'completion' || quoteAccepted
+          ? quoteRows
+          : quoteRows.slice(0, 3);
+
+    const quotesReceived = visibleRows.filter(row => row.status === 'Quote received' || row.status === 'Clarification pending').length;
+    const lowestQuote = visibleRows
+      .filter(row => row.quoteValue)
+      .map(row => Number(row.quoteValue?.replace(/[^0-9.]/g, '')))
+      .filter(value => !Number.isNaN(value))
+      .sort((a, b) => a - b)[0];
+    const nominatedCount = visibleRows.filter(row => row.nominatedByLeaseholders).length;
+    const recommendedContractor = quoteAccepted ? 'Apex Roofing' : quotesReceived >= 2 ? 'Apex Roofing' : null;
+    const selectedContractor =
+      visibleRows.find(row => row.contractor === 'Apex Roofing') ??
+      visibleRows.find(row => row.status === 'Quote received') ??
+      visibleRows[0];
+    const showSelectedContractorMode =
+      quoteAccepted ||
+      currentStage === 'statement-of-estimate' ||
+      currentStage === 'notice-of-reasons' ||
+      currentStage === 'ongoing-works' ||
+      currentStage === 'completion';
+
+    return {
+      currentStage,
+      requestedCount: visibleRows.length,
+      quotesReceived,
+      lowestQuote: lowestQuote ? `£${lowestQuote.toLocaleString()}` : 'Awaiting quotes',
+      nominatedCount,
+      recommendedContractor,
+      rows: visibleRows,
+      selectedContractor,
+      showSelectedContractorMode
+    };
+  }, [allIssues, isNewWork, linkedIssues, lowestQuoteAccepted, work.formData?.consultationStage, work.formData?.lowestQuoteAccepted]);
+
+  const overviewAttentionItems = useMemo(() => {
+    if (isNewWork) {
+      return [
+        {
+          source: 'Setup',
+          title: 'No consultation started',
+          detail: 'Create the first consultation documents to begin the Section 20 process.',
+          tone: 'secondary',
+          actionLabel: 'Open documents',
+          targetTab: 'documents' as const
         }
-        return receivedOn >= weekStart && receivedOn < weekEnd;
-      }).length;
+      ];
+    }
 
-      return count;
-    });
+    const items: { source: string; title: string; where?: string; when?: string; detail: string; tone: 'warning' | 'info' | 'secondary'; actionLabel: string; targetTab: 'documents' | 'issues' | 'comments'; targetDocumentId?: string | number; }[] = [];
 
-    let runningActual = 0;
+    if (objectionCount > 0 && isObservationPriorityStage) {
+      items.push({
+        source: 'Observations',
+        title: `${objectionCount} objection${objectionCount === 1 ? '' : 's'} unresolved`,
+        where: observationNoticeSummaries[0]?.documentName || 'Active consultation notice',
+        when: observationNoticeSummaries[0]?.latestReceivedOn ? new Date(observationNoticeSummaries[0].latestReceivedOn).toLocaleDateString('en-GB') : undefined,
+        detail: 'Needs review before the consultation stage can be closed out.',
+        tone: 'warning',
+        actionLabel: 'Review observations',
+        targetTab: 'documents',
+        targetDocumentId: observationNoticeSummaries[0]?.documentId
+      });
+    }
 
-    return weeks.map((_, index) => {
-      runningActual += actualCounts[index];
+    if (unresolvedObservationCount > 0 && isObservationPriorityStage) {
+      items.push({
+        source: 'Observations',
+        title: `${unresolvedObservationCount} response${unresolvedObservationCount === 1 ? '' : 's'} still open`,
+        where: observationNoticeSummaries[0]?.documentName || 'Active consultation notice',
+        when: observationNoticeSummaries[0]?.latestReceivedOn ? new Date(observationNoticeSummaries[0].latestReceivedOn).toLocaleDateString('en-GB') : undefined,
+        detail: 'Leaseholder responses still need a PM decision or acknowledgement.',
+        tone: 'info',
+        actionLabel: 'Review observations',
+        targetTab: 'documents',
+        targetDocumentId: observationNoticeSummaries[0]?.documentId
+      });
+    }
+
+    const draftConsultationDocs = currentStageDocuments.filter((document: any) => document.status === 'Draft');
+    if (draftConsultationDocs.length > 0) {
+      items.push({
+        source: 'Documents',
+        title: `${draftConsultationDocs.length} consultation document${draftConsultationDocs.length === 1 ? '' : 's'} still draft`,
+        where: draftConsultationDocs[0]?.name,
+        when: draftConsultationDocs[0]?.lastUpdated ? new Date(draftConsultationDocs[0].lastUpdated).toLocaleDateString('en-GB') : undefined,
+        detail: 'Review drafts so notices and supporting packs are ready when needed.',
+        tone: 'info',
+        actionLabel: 'Open draft',
+        targetTab: 'documents',
+        targetDocumentId: draftConsultationDocs[0]?.id
+      });
+    }
+
+    if (contractorQuoteData && !contractorQuoteData.showSelectedContractorMode) {
+      const pendingQuotes = contractorQuoteData.rows.filter(row => row.status !== 'Quote received').length;
+      if (pendingQuotes > 0) {
+        items.push({
+          source: 'Contractors',
+          title: `${pendingQuotes} contractor quote${pendingQuotes === 1 ? '' : 's'} still pending`,
+          where: 'Tender / quote requests',
+          detail: 'Quote activity is still live and may affect the recommendation.',
+          tone: 'warning',
+          actionLabel: 'Open issues',
+          targetTab: 'issues'
+        });
+      }
+    }
+
+    const generatedButNotSent = currentStageDocuments.filter((document: any) => document.postalPackGeneratedAt && !document.sentDate);
+    if (generatedButNotSent.length > 0) {
+      items.push({
+        source: 'Delivery',
+        title: `${generatedButNotSent.length} document${generatedButNotSent.length === 1 ? '' : 's'} generated but not marked sent`,
+        where: generatedButNotSent[0]?.name,
+        when: generatedButNotSent[0]?.postalPackGeneratedAt ? new Date(generatedButNotSent[0].postalPackGeneratedAt).toLocaleDateString('en-GB') : undefined,
+        detail: 'Confirm issue once postal or email delivery has actually happened.',
+        tone: 'info',
+        actionLabel: 'Open delivery',
+        targetTab: 'documents',
+        targetDocumentId: generatedButNotSent[0]?.id
+      });
+    }
+
+    return items.slice(0, 4);
+  }, [
+    contractorQuoteData,
+    currentStageDocuments,
+    isNewWork,
+    isObservationPriorityStage,
+    objectionCount,
+    unresolvedObservationCount
+  ]);
+
+  const overviewKeyUpdates = useMemo(() => {
+    if (isNewWork) {
+      return [
+        {
+          source: 'Setup',
+          title: 'Major works created',
+          where: 'Overview',
+          detail: 'No live consultation, document, or contractor activity yet.',
+          tone: 'secondary',
+          actionLabel: 'Open documents',
+          targetTab: 'documents' as const
+        }
+      ];
+    }
+
+    const updates: { source: string; title: string; where?: string; when?: string; detail: string; tone: 'warning' | 'info' | 'secondary' | 'success'; actionLabel: string; targetTab: 'documents' | 'issues' | 'comments'; targetDocumentId?: string | number; }[] = [];
+
+    const latestConsultationDoc = [...currentStageDocuments]
+      .filter((document: any) => document.lastUpdated || document.sentDate || document.uploadedDate)
+      .sort((a: any, b: any) => {
+        const aDate = new Date(a.lastUpdated || a.sentDate || a.uploadedDate || 0).getTime();
+        const bDate = new Date(b.lastUpdated || b.sentDate || b.uploadedDate || 0).getTime();
+        return bDate - aDate;
+      })[0];
+
+    if (latestConsultationDoc) {
+      updates.push({
+        source: 'Documents',
+        title: latestConsultationDoc.name,
+        where: latestConsultationDoc.stage,
+        when: latestConsultationDoc.sentDate
+          ? new Date(latestConsultationDoc.sentDate).toLocaleDateString('en-GB')
+          : latestConsultationDoc.lastUpdated
+            ? new Date(latestConsultationDoc.lastUpdated).toLocaleDateString('en-GB')
+            : undefined,
+        detail: latestConsultationDoc.sentDate
+          ? `Sent ${new Date(latestConsultationDoc.sentDate).toLocaleDateString('en-GB')}`
+          : `Status: ${latestConsultationDoc.status || 'Draft'}`,
+        tone: latestConsultationDoc.sentDate ? 'success' : 'info',
+        actionLabel: 'Open document',
+        targetTab: 'documents',
+        targetDocumentId: latestConsultationDoc.id
+      });
+    }
+
+    if (observationNoticeSummaries[0]) {
+      updates.push({
+        source: 'Observations',
+        title: observationNoticeSummaries[0].documentName,
+        where: CONSULTATION_STAGE_LABELS[observationNoticeSummaries[0].stage],
+        when: observationNoticeSummaries[0].latestReceivedOn ? new Date(observationNoticeSummaries[0].latestReceivedOn).toLocaleDateString('en-GB') : undefined,
+        detail: `${observationNoticeSummaries[0].responses} response${observationNoticeSummaries[0].responses === 1 ? '' : 's'} logged${observationNoticeSummaries[0].objections > 0 ? `, ${observationNoticeSummaries[0].objections} objection${observationNoticeSummaries[0].objections === 1 ? '' : 's'}` : ''}`,
+        tone: observationNoticeSummaries[0].objections > 0 ? 'warning' : 'info',
+        actionLabel: 'Review observations',
+        targetTab: 'documents',
+        targetDocumentId: observationNoticeSummaries[0].documentId
+      });
+    }
+
+    if (contractorQuoteData) {
+      updates.push({
+        source: 'Contractors',
+        title: contractorQuoteData.showSelectedContractorMode ? 'Selected contractor' : 'Contractor quotes',
+        where: contractorQuoteData.showSelectedContractorMode
+          ? contractorQuoteData.selectedContractor?.contractor ?? 'Selected contractor'
+          : 'Tender / quote requests',
+        detail: contractorQuoteData.showSelectedContractorMode
+          ? `${contractorQuoteData.selectedContractor?.contractor ?? 'Contractor'} progressing at ${contractorQuoteData.selectedContractor?.quoteValue ?? 'quote TBC'}`
+          : `${contractorQuoteData.quotesReceived}/${contractorQuoteData.requestedCount} quotes returned${contractorQuoteData.nominatedCount ? `, ${contractorQuoteData.nominatedCount} leaseholder-nominated` : ''}`,
+        tone: contractorQuoteData.showSelectedContractorMode ? 'success' : 'info',
+        actionLabel: 'Open issues',
+        targetTab: 'issues'
+      });
+    }
+
+    if (visibleComments[0]) {
+      updates.push({
+        source: 'Comments',
+        title: 'Latest internal comment',
+        where: visibleComments[0].author,
+        when: visibleComments[0].timestamp,
+        detail: `${visibleComments[0].author}: ${visibleComments[0].comment.length > 80 ? `${visibleComments[0].comment.substring(0, 80)}...` : visibleComments[0].comment}`,
+        tone: 'secondary',
+        actionLabel: 'Open comments',
+        targetTab: 'comments'
+      });
+    }
+
+    return updates.slice(0, 4);
+  }, [contractorQuoteData, currentStageDocuments, isNewWork, observationNoticeSummaries, visibleComments]);
+
+  const aiOverview = useMemo(() => {
+    if (isNewWork) {
       return {
-        id: `week-${index + 1}`,
-        week: `Week ${index + 1}`,
-        actual: runningActual,
-        target: Math.round(((index + 1) / weeks.length) * leaseholderCount)
+        tone: 'info',
+        health: 'Not started',
+        title: 'Section 20 has not started yet.',
+        detail: 'Create the first consultation documents to move this case into an active workflow.',
+        forecast: 'Forecast: Stable if first notice documents are created this week.'
+      };
+    }
+
+    if (objectionCount > 0 && isObservationPriorityStage) {
+      return {
+        tone: 'warning',
+        health: 'At risk',
+        title: 'Live consultation risk is elevated.',
+        detail: 'Current consultation activity needs review before clean progression to the next stage.',
+        forecast: 'Forecast: Likely delay risk if objections stay unresolved in the next 7-14 days.'
+      };
+    }
+
+    if (unresolvedObservationCount > 0 && isObservationPriorityStage) {
+      return {
+        tone: 'info',
+        health: 'Watch',
+        title: `${unresolvedObservationCount} leaseholder response${unresolvedObservationCount === 1 ? '' : 's'} still need PM action.`,
+        detail: 'Consultation remains active; close response decisions to keep progression clean into the next stage.',
+        forecast: 'Forecast: Can stay on track if response backlog is cleared this cycle.'
+      };
+    }
+
+    if (contractorQuoteData?.showSelectedContractorMode) {
+      return {
+        tone: 'success',
+        health: 'Healthy',
+        title: `${contractorQuoteData.selectedContractor?.contractor ?? 'Selected contractor'} is now the live focus of this case.`,
+        detail: 'Consultation pressure has reduced; the key control is award, mobilisation, and delivery execution.',
+        forecast: 'Forecast: Likely to progress as planned if delivery dependencies remain clear.'
+      };
+    }
+
+    if (contractorQuoteData && contractorQuoteData.quotesReceived > 0) {
+      return {
+        tone: 'info',
+        health: 'Watch',
+        title: `${contractorQuoteData.quotesReceived} contractor quote${contractorQuoteData.quotesReceived === 1 ? '' : 's'} have been returned so far.`,
+        detail: 'The main pressure now is quote review quality while keeping notice responses visible.',
+        forecast: 'Forecast: Good chance of stable progression once recommendation is confirmed.'
+      };
+    }
+
+    return {
+      tone: 'secondary',
+      health: 'Stable',
+      title: 'The case is active with no urgent risk currently surfaced.',
+      detail: 'Use this page as a quick digest, then move into documents, observations, or issues for detailed work.',
+      forecast: 'Forecast: Expected to remain stable if current actions continue.'
+    };
+  }, [contractorQuoteData, isNewWork, isObservationPriorityStage, objectionCount, unresolvedObservationCount]);
+
+  const aiOverviewMetrics = useMemo(() => {
+    const issuedDocuments = currentStageDocuments.filter((document: any) => Boolean(document.sentDate)).length;
+    const documentProgress = currentStageDocuments.length > 0
+      ? Math.round((issuedDocuments / currentStageDocuments.length) * 100)
+      : 0;
+    const responseProgress = leaseholderCount > 0
+      ? Math.min(Math.round((respondedLeaseholderCount / leaseholderCount) * 100), 100)
+      : 0;
+    const resolutionProgress = totalObservationEntries > 0
+      ? Math.round((addressedObservationCount / totalObservationEntries) * 100)
+      : 0;
+    const quoteProgress = contractorQuoteData
+      ? Math.round((contractorQuoteData.quotesReceived / Math.max(contractorQuoteData.requestedCount, 1)) * 100)
+      : 0;
+
+    return [
+      {
+        key: 'documents',
+        label: 'Documents issued',
+        value: documentProgress,
+        detail: `${issuedDocuments}/${currentStageDocuments.length || 0}`,
+        tone: documentProgress >= 80 ? 'success' : documentProgress >= 40 ? 'info' : 'warning'
+      },
+      {
+        key: 'responses',
+        label: 'Leaseholder responses',
+        value: responseProgress,
+        detail: `${respondedLeaseholderCount}/${leaseholderCount}`,
+        tone: responseProgress >= 60 ? 'success' : responseProgress >= 25 ? 'info' : 'warning'
+      },
+      {
+        key: 'resolution',
+        label: 'Responses addressed',
+        value: resolutionProgress,
+        detail: `${addressedObservationCount}/${totalObservationEntries || 0}`,
+        tone: resolutionProgress >= 70 ? 'success' : resolutionProgress >= 35 ? 'info' : 'warning'
+      },
+      {
+        key: 'quotes',
+        label: 'Quotes returned',
+        value: quoteProgress,
+        detail: contractorQuoteData
+          ? `${contractorQuoteData.quotesReceived}/${contractorQuoteData.requestedCount}`
+          : '0/0',
+        tone: quoteProgress >= 70 ? 'success' : quoteProgress >= 30 ? 'info' : 'warning'
+      }
+    ];
+  }, [
+    addressedObservationCount,
+    contractorQuoteData,
+    currentStageDocuments,
+    leaseholderCount,
+    respondedLeaseholderCount,
+    totalObservationEntries
+  ]);
+
+  const aiOverviewChartConfig = {
+    planned: {
+      label: 'Planned progress',
+      color: '#94A3B8'
+    },
+    projected: {
+      label: 'Projected progress',
+      color: '#0B81C5'
+    }
+  } satisfies ChartConfig;
+
+  const aiTimelineProjection = useMemo(() => {
+    const oneDayMs = 24 * 60 * 60 * 1000;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const parseDateValue = (value?: string | null) => {
+      if (!value) return null;
+      const direct = new Date(value);
+      if (!Number.isNaN(direct.getTime())) return direct;
+      const dateMatch = value.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+      if (dateMatch) {
+        const [, day, month, year] = dateMatch;
+        const fallback = new Date(Number(year), Number(month) - 1, Number(day));
+        if (!Number.isNaN(fallback.getTime())) return fallback;
+      }
+      return null;
+    };
+
+    const parsedStart = parseDateValue(work.formData?.startDate) || parseDateValue(work.createdOn);
+    const parsedPlannedEnd = work.formData?.completionDate ? new Date(work.formData.completionDate) : null;
+
+    const startDate =
+      parsedStart && !Number.isNaN(parsedStart.getTime())
+        ? parsedStart
+        : today;
+    startDate.setHours(0, 0, 0, 0);
+
+    const stageDurationDays: Record<string, number> = {
+      'notice-of-intention': 120,
+      'first-notice': 120,
+      tenders: 165,
+      'statement-of-estimate': 185,
+      'notice-of-reasons': 215,
+      'ongoing-works': 270,
+      completion: 210
+    };
+    const fallbackPlannedEnd = new Date(
+      startDate.getTime() + (stageDurationDays[currentConsultationStage] ?? 150) * oneDayMs
+    );
+    const plannedEndDate =
+      parsedPlannedEnd && !Number.isNaN(parsedPlannedEnd.getTime()) && parsedPlannedEnd.getTime() > startDate.getTime()
+        ? parsedPlannedEnd
+        : fallbackPlannedEnd;
+    plannedEndDate.setHours(0, 0, 0, 0);
+
+    const totalPlannedDays = Math.max(30, Math.round((plannedEndDate.getTime() - startDate.getTime()) / oneDayMs));
+    const elapsedDays = Math.max(0, Math.min(totalPlannedDays, Math.round((today.getTime() - startDate.getTime()) / oneDayMs)));
+    const plannedProgressToday = Math.round((elapsedDays / totalPlannedDays) * 100);
+
+    const scoreFromSignals = Math.round(
+      aiOverviewMetrics.reduce((sum, metric) => sum + metric.value, 0) / Math.max(aiOverviewMetrics.length, 1)
+    );
+    const stageProgressDefaults: Record<string, number> = {
+      'notice-of-intention': 15,
+      'first-notice': 20,
+      tenders: 42,
+      'statement-of-estimate': 58,
+      'notice-of-reasons': 72,
+      'ongoing-works': 86,
+      completion: 100
+    };
+    const stageProgress = stageProgressDefaults[currentConsultationStage] ?? 35;
+    const statusModifier =
+      work.status === 'Delayed' ? 0.78 :
+      work.status === 'On hold' ? 0.68 :
+      work.status === 'Completed' ? 1.08 :
+      work.status === 'Cancelled' ? 0.62 :
+      1;
+
+    const idSeed = Array.from(String(work.id || '0')).reduce((acc, char) => acc + char.charCodeAt(0), 0);
+    const microVariance = ((idSeed % 9) - 4) * 0.015; // deterministic variation by work
+    const blendedExecution = (scoreFromSignals * 0.55) + (stageProgress * 0.45);
+    const currentExecutionScore = Math.max(5, Math.min(100, Math.round(blendedExecution * (statusModifier + microVariance))));
+
+    const rawVelocity = plannedProgressToday > 0
+      ? currentExecutionScore / plannedProgressToday
+      : currentExecutionScore > 0
+        ? 1
+        : 0.85;
+    const velocity = Math.max(0.5, Math.min(1.45, rawVelocity));
+    const projectedTotalDays = Math.max(30, Math.round(totalPlannedDays / velocity));
+    const expectedCompletionDate = new Date(startDate.getTime() + projectedTotalDays * oneDayMs);
+    expectedCompletionDate.setHours(0, 0, 0, 0);
+
+    const totalWindowDays = Math.max(totalPlannedDays, projectedTotalDays);
+    const isOnHold = work.status === 'On hold';
+    const isCancelled = work.status === 'Cancelled';
+    const statusCutoffDay = (isOnHold || isCancelled) ? elapsedDays : null;
+    const checkpoints = [0, 0.2, 0.4, 0.6, 0.8, 1];
+    const chartData = checkpoints.map((ratio) => {
+      const dayOffset = Math.round(totalWindowDays * ratio);
+      const pointDate = new Date(startDate.getTime() + dayOffset * oneDayMs);
+      const plannedValue = Math.max(0, Math.min(100, Math.round((dayOffset / totalPlannedDays) * 100)));
+      const projectedValue = Math.max(0, Math.min(100, Math.round((dayOffset / projectedTotalDays) * 100)));
+      const isBeyondCutoff = statusCutoffDay !== null && dayOffset > statusCutoffDay;
+
+      return {
+        checkpoint: pointDate.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' }),
+        planned: isCancelled && isBeyondCutoff ? null : plannedValue,
+        projected: (isOnHold || isCancelled) && isBeyondCutoff ? null : projectedValue
       };
     });
-  })();
 
-  // Contractor performance data
-  const contractors = [
-    { name: 'Apex Roofing', quotes: 3, avgResponse: '5 days', onTimeRate: 100 },
-    { name: 'BuildRight', quotes: 2, avgResponse: '7 days', onTimeRate: 100 },
-    { name: 'SafeDoor', quotes: 2, avgResponse: '6 days', onTimeRate: 100 },
-    { name: 'ThermalTech', quotes: 1, avgResponse: '3 days', onTimeRate: 100 }
-  ];
+    const varianceDays = projectedTotalDays - totalPlannedDays;
+    const defaultForecastLabel =
+      varianceDays > 5
+        ? `Likely +${varianceDays} day delay`
+        : varianceDays < -5
+          ? `${Math.abs(varianceDays)} days ahead`
+          : 'On track';
+
+    const forecastLabel = isCancelled
+      ? `Cancelled as of ${today.toLocaleDateString('en-GB')}`
+      : isOnHold
+        ? `On hold as of ${today.toLocaleDateString('en-GB')}`
+        : defaultForecastLabel;
+
+    const expectedDurationMonths = (projectedTotalDays / 30).toFixed(1);
+    const expectedCompletionDisplay = isCancelled
+      ? 'Cancelled'
+      : isOnHold
+        ? 'Paused'
+        : expectedCompletionDate.toLocaleDateString('en-GB');
+    const expectedDurationDisplay = isCancelled
+      ? 'N/A'
+      : isOnHold
+        ? 'Paused'
+        : `${expectedDurationMonths} months`;
+
+    return {
+      chartData,
+      startedOn: startDate.toLocaleDateString('en-GB'),
+      plannedCompletion: plannedEndDate.toLocaleDateString('en-GB'),
+      expectedCompletion: expectedCompletionDisplay,
+      progressNow: currentExecutionScore,
+      totalPlannedDays,
+      projectedTotalDays,
+      varianceDays,
+      forecastLabel,
+      expectedDurationMonths,
+      expectedDurationDisplay
+    };
+  }, [
+    aiOverviewMetrics,
+    currentConsultationStage,
+    work.createdOn,
+    work.formData?.completionDate,
+    work.formData?.startDate,
+    work.id,
+    work.status
+  ]);
+
+  const handleOverviewAction = (targetTab: 'documents' | 'issues' | 'comments', targetDocumentId?: string | number) => {
+    if (targetTab === 'documents') {
+      setActiveTab('documents');
+      setDocumentSegment('consultation');
+
+      if (targetDocumentId !== undefined) {
+        const targetDocument = documents.find((document: any) => String(document.id) === String(targetDocumentId));
+        if (targetDocument) {
+          setSelectedDocument(targetDocument);
+          setShowDocumentDetail(true);
+        }
+      }
+      return;
+    }
+
+    setActiveTab(targetTab);
+  };
 
   const toggleStage = (stageId: string) => {
     setExpandedStage(prev => prev === stageId ? null : stageId);
@@ -2870,846 +3481,563 @@ Date of notice: [Insert date]`;
           {isNewWork ? (
             /* Empty state for new works - Show structure with empty widgets */
             <>
-              {/* Stats Cards - Empty State */}
-              <div className="row mb-4">
-                <div className="col-md-3 mb-3">
-                  <div className="card border-0 shadow-sm h-100">
-                    <div className="card-body">
-                      <div className="d-flex justify-content-between align-items-start mb-2">
-                        <div className="text-muted small">Total Issues</div>
-                        <FileText size={40} className="text-muted opacity-50" />
-                      </div>
-                      <h3 className="mb-1 text-muted">0</h3>
-                      <div className="text-muted small">No issues yet</div>
-                    </div>
-                  </div>
-                </div>
+	              <div className="row mb-4">
+	                <div className="col-md-3 mb-3">
+	                  <div className="card border-0 shadow-sm h-100">
+	                    <div className="card-body">
+	                      <div className="d-flex justify-content-between align-items-start mb-2">
+	                        <div className="text-muted small">Total Issues</div>
+	                        <FileText size={40} className="text-muted opacity-50" />
+	                      </div>
+	                      <h3 className="mb-1 text-muted">0</h3>
+	                      <div className="text-muted small">No issues yet</div>
+	                    </div>
+	                  </div>
+	                </div>
+	                <div className="col-md-3 mb-3">
+	                  <div className="card border-0 shadow-sm h-100">
+	                    <div className="card-body">
+	                      <div className="d-flex justify-content-between align-items-start mb-2">
+	                        <div className="text-muted small">Active Contractors</div>
+	                        <Briefcase size={40} className="text-muted opacity-50" />
+	                      </div>
+	                      <h3 className="mb-1 text-muted">0</h3>
+	                      <div className="text-muted small">No contractors yet</div>
+	                    </div>
+	                  </div>
+	                </div>
+	                <div className="col-md-3 mb-3">
+	                  <div className="card border-0 shadow-sm h-100">
+	                    <div className="card-body">
+	                      <div className="d-flex justify-content-between align-items-start mb-2">
+	                        <div className="text-muted small">Leaseholder Responses</div>
+	                        <MessageSquare size={40} className="text-muted opacity-50" />
+	                      </div>
+	                      <h3 className="mb-1 text-muted">0/{leaseholderCount}</h3>
+	                      <div className="text-muted small">No consultation started</div>
+	                    </div>
+	                  </div>
+	                </div>
+	                <div className="col-md-3 mb-3">
+	                  <div className="card border-0 shadow-sm h-100">
+	                    <div className="card-body">
+	                      <div className="d-flex justify-content-between align-items-start mb-2">
+	                        <div className="text-muted small">Total Estimated Cost</div>
+	                        <PoundSterling size={40} className={work.formData?.estimatedBudget ? "text-primary" : "text-muted opacity-50"} />
+	                      </div>
+	                      <h3 className={`mb-1 ${work.formData?.estimatedBudget ? "" : "text-muted"}`}>
+	                        {work.formData?.estimatedBudget
+	                          ? `£${parseInt(work.formData.estimatedBudget).toLocaleString()}`
+	                          : '£0'}
+	                      </h3>
+	                      {work.formData?.estimatedBudget && (work.formData?.agentFeeValue || work.formData?.surveyorFeeValue) ? (
+	                        <div className="d-flex align-items-center gap-1" style={{ position: 'relative' }}>
+	                          <button
+	                            className="btn btn-link p-0 text-decoration-none d-flex align-items-center gap-1"
+	                            style={{ fontSize: '12px' }}
+	                            onMouseEnter={() => setShowCostBreakdown(true)}
+	                            onMouseLeave={() => setShowCostBreakdown(false)}
+	                          >
+	                            <Info size={14} className="text-primary" />
+	                            <span className="text-primary">View cost breakdown</span>
+	                          </button>
+	                          {showCostBreakdown && (() => {
+	                            const estimatedBudget = parseFloat(work.formData.estimatedBudget);
+	                            let agentFee = 0;
+	                            let surveyorFee = 0;
+	                            if (work.formData.agentFeeValue) {
+	                              if (work.formData.agentFeeType === 'percentage') {
+	                                agentFee = (estimatedBudget * parseFloat(work.formData.agentFeeValue)) / 100;
+	                              } else {
+	                                agentFee = parseFloat(work.formData.agentFeeValue);
+	                              }
+	                            }
+	                            if (work.formData.surveyorFeeValue) {
+	                              if (work.formData.surveyorFeeType === 'percentage') {
+	                                surveyorFee = (estimatedBudget * parseFloat(work.formData.surveyorFeeValue)) / 100;
+	                              } else {
+	                                surveyorFee = parseFloat(work.formData.surveyorFeeValue);
+	                              }
+	                            }
+	                            const totalCost = estimatedBudget + agentFee + surveyorFee;
+	                            return (
+	                              <div
+	                                className="position-absolute bg-white border rounded shadow-lg p-3"
+	                                style={{
+	                                  top: '25px',
+	                                  left: '0',
+	                                  zIndex: 1000,
+	                                  minWidth: '280px',
+	                                  fontSize: '13px'
+	                                }}
+	                                onMouseEnter={() => setShowCostBreakdown(true)}
+	                                onMouseLeave={() => setShowCostBreakdown(false)}
+	                              >
+	                                <div className="fw-bold mb-2 pb-2 border-bottom">Cost Breakdown</div>
+	                                <div className="d-flex justify-content-between mb-2">
+	                                  <span className="text-muted">Net cost of works:</span>
+	                                  <span className="fw-medium">£{estimatedBudget.toLocaleString()}</span>
+	                                </div>
+	                                {work.formData.agentFeeValue && (
+	                                  <>
+	                                    <div className="d-flex justify-content-between mb-1">
+	                                      <span className="text-muted">Management fee:</span>
+	                                      <span className="fw-medium">£{agentFee.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+	                                    </div>
+	                                    <div className="mb-2 ps-3">
+	                                      <small className="text-muted" style={{ fontSize: '11px' }}>
+	                                        ({work.formData.agentFeeType === 'percentage'
+	                                          ? `${work.formData.agentFeeValue}% of net cost`
+	                                          : 'Fixed fee'})
+	                                      </small>
+	                                    </div>
+	                                  </>
+	                                )}
+	                                {work.formData.surveyorFeeValue && (
+	                                  <>
+	                                    <div className="d-flex justify-content-between mb-1">
+	                                      <span className="text-muted">Surveyor fee:</span>
+	                                      <span className="fw-medium">£{surveyorFee.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+	                                    </div>
+	                                    <div className="mb-2 ps-3">
+	                                      <small className="text-muted" style={{ fontSize: '11px' }}>
+	                                        ({work.formData.surveyorFeeType === 'percentage'
+	                                          ? `${work.formData.surveyorFeeValue}% of net cost`
+	                                          : 'Fixed fee'})
+	                                      </small>
+	                                    </div>
+	                                  </>
+	                                )}
+	                                <div className="border-top pt-2 mt-2">
+	                                  <div className="d-flex justify-content-between">
+	                                    <span className="fw-bold">Total (inc. VAT):</span>
+	                                    <span className="fw-bold text-primary">£{totalCost.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</span>
+	                                  </div>
+	                                </div>
+	                              </div>
+	                            );
+	                          })()}
+	                        </div>
+	                      ) : (
+	                        <div className="text-muted small">
+	                          {work.formData?.estimatedBudget ? 'Estimated budget' : 'No estimates yet'}
+	                        </div>
+	                      )}
+	                    </div>
+	                  </div>
+	                </div>
+	              </div>
 
-                <div className="col-md-3 mb-3">
-                  <div className="card border-0 shadow-sm h-100">
-                    <div className="card-body">
-                      <div className="d-flex justify-content-between align-items-start mb-2">
-                        <div className="text-muted small">Active Contractors</div>
-                        <Briefcase size={40} className="text-muted opacity-50" />
-                      </div>
-                      <h3 className="mb-1 text-muted">0</h3>
-                      <div className="text-muted small">No contractors yet</div>
-                    </div>
-                  </div>
-                </div>
+	              <div className="row mb-4">
+	                <div className="col-12 mb-4">
+	                  <div className="card shadow-sm" style={{ backgroundColor: '#FFFFFF', border: '1px solid #0d6efd' }}>
+	                    <div className="card-body">
+	                      <div>
+	                        <div className="flex-grow-1">
+	                          <>
+	                            <div className="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-2">
+	                              <div>
+	                                <div className="text-muted" style={{ fontSize: '12px' }}>Started</div>
+	                                <div className="fw-semibold" style={{ fontSize: '14px' }}>{aiTimelineProjection.startedOn}</div>
+	                              </div>
+	                              <div>
+	                                <div className="text-muted" style={{ fontSize: '12px' }}>Planned completion</div>
+	                                <div className="fw-semibold" style={{ fontSize: '14px' }}>{aiTimelineProjection.plannedCompletion}</div>
+	                              </div>
+	                              <div>
+	                                <div className="text-muted" style={{ fontSize: '12px' }}>Expected completion</div>
+	                                <div className="fw-semibold" style={{ fontSize: '14px' }}>{aiTimelineProjection.expectedCompletion}</div>
+	                              </div>
+	                              <div className="text-md-end">
+	                                <div className="text-muted" style={{ fontSize: '12px' }}>Estimated completion</div>
+	                                <div className="fw-semibold" style={{ fontSize: '14px' }}>
+	                                  {aiTimelineProjection.expectedDurationDisplay}
+	                                </div>
+	                                <div className="text-muted" style={{ fontSize: '12px' }}>{aiTimelineProjection.forecastLabel}</div>
+	                              </div>
+	                            </div>
+	                            <div className="d-flex flex-wrap align-items-center gap-3 px-1 pb-2">
+	                              <div className="d-flex align-items-center gap-1">
+	                                <span style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#94A3B8', display: 'inline-block' }} />
+	                                <span className="text-muted" style={{ fontSize: '12px' }}>Planned timeline</span>
+	                              </div>
+	                              <div className="d-flex align-items-center gap-1">
+	                                <span style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#0B81C5', display: 'inline-block' }} />
+	                                <span className="text-muted" style={{ fontSize: '12px' }}>Expected timeline</span>
+	                              </div>
+	                            </div>
+	                            <ChartContainer config={aiOverviewChartConfig} className="h-[200px] w-full">
+	                              <LineChart data={aiTimelineProjection.chartData} margin={{ top: 6, right: 8, left: 8, bottom: 6 }}>
+	                                <CartesianGrid vertical={false} strokeDasharray="3 4" stroke="rgba(100,116,139,0.25)" />
+	                                <XAxis dataKey="checkpoint" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#64748b' }} />
+	                                <YAxis domain={[0, 100]} axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#64748b' }} width={32} />
+	                                <ChartTooltip content={<ChartTooltipContent indicator="line" />} />
+	                                <Line dataKey="planned" type="monotone" stroke="var(--color-planned)" strokeWidth={2.25} dot={false} />
+	                                <Line dataKey="projected" type="monotone" stroke="var(--color-projected)" strokeWidth={2.75} strokeDasharray="4 4" dot={false} />
+	                              </LineChart>
+	                            </ChartContainer>
+	                            <div className="d-flex flex-wrap justify-content-between gap-2 px-1 pt-2">
+	                              <div className="text-muted" style={{ fontSize: '12px' }}>
+	                                Current completion confidence: <span className="fw-semibold text-dark">{aiTimelineProjection.progressNow}%</span>
+	                              </div>
+	                              <div className="text-muted" style={{ fontSize: '12px' }}>
+	                                Planned duration: <span className="fw-semibold text-dark">{aiTimelineProjection.totalPlannedDays} days</span>
+	                              </div>
+	                              <div className="text-muted" style={{ fontSize: '12px' }}>
+	                                Projected duration: <span className="fw-semibold text-dark">{aiTimelineProjection.projectedTotalDays} days</span>
+	                              </div>
+	                            </div>
+	                          </>
+	                        </div>
+	                      </div>
+	                    </div>
+	                  </div>
+	                </div>
+	                <div className="col-12 mb-4">
+	                  <div className="card border-0 shadow-sm h-100">
+	                    <div className="card-body">
+	                      <h5 className="mb-2">Needs attention</h5>
+	                      <div className="rounded-3 border p-3 text-muted small">
+	                        Nothing needs PM action yet. Live items will appear here once consultation or contractor activity starts.
+	                      </div>
+	                    </div>
+	                  </div>
+	                </div>
+	                <div className="col-12 mb-4">
+	                  <div className="card border-0 shadow-sm h-100">
+	                    <div className="card-body">
+	                      <h5 className="mb-2">Key updates</h5>
+	                      <div className="rounded-3 border overflow-hidden">
+	                        <div className="px-3 py-3 text-muted small">No updates yet. This area will show the latest meaningful changes once the case becomes active.</div>
+	                      </div>
+	                    </div>
+	                  </div>
+	                </div>
+	              </div>
 
-                <div className="col-md-3 mb-3">
-                  <div className="card border-0 shadow-sm h-100">
-                    <div className="card-body">
-                      <div className="d-flex justify-content-between align-items-start mb-2">
-                        <div className="text-muted small">Leaseholder Responses</div>
-                        <MessageSquare size={40} className="text-muted opacity-50" />
-                      </div>
-                      <h3 className="mb-1 text-muted">0/{leaseholderCount}</h3>
-                      <div className="text-muted small">No consultation started</div>
-                    </div>
-                  </div>
-                </div>
+	            </>
+	          ) : (
+	            <>
+	          <div className="row mb-4">
+	            <div className="col-md-3 mb-3">
+	              <div className="card border-0 shadow-sm h-100">
+	                <div className="card-body">
+	                  <div className="d-flex justify-content-between align-items-start mb-2">
+	                    <div className="text-muted small">Total Issues</div>
+	                    <FileText size={40} className="text-primary" />
+	                  </div>
+	                  <h3 className="mb-1">6</h3>
+	                  <div className="text-muted small">Across all stages</div>
+	                </div>
+	              </div>
+	            </div>
+	            <div className="col-md-3 mb-3">
+	              <div className="card border-0 shadow-sm h-100">
+	                <div className="card-body">
+	                  <div className="d-flex justify-content-between align-items-start mb-2">
+	                    <div className="text-muted small">Active Contractors</div>
+	                    <Briefcase size={40} className="text-primary" />
+	                  </div>
+	                  <h3 className="mb-1">8</h3>
+	                  <div className="text-muted small">4 pending quotes</div>
+	                </div>
+	              </div>
+	            </div>
+	            <div className="col-md-3 mb-3">
+	              <div className="card border-0 shadow-sm h-100">
+	                <div className="card-body">
+	                  <div className="d-flex justify-content-between align-items-start mb-2">
+	                    <div className="text-muted small">Leaseholder Responses</div>
+	                    <MessageSquare size={40} className="text-primary" />
+	                  </div>
+	                  <h3 className="mb-1">47/70</h3>
+	                  <div className="text-muted small">67% response rate</div>
+	                </div>
+	              </div>
+	            </div>
+	            <div className="col-md-3 mb-3">
+	              <div className="card border-0 shadow-sm h-100">
+	                <div className="card-body">
+	                  <div className="d-flex justify-content-between align-items-start mb-2">
+	                    <div className="text-muted small">Total Estimated Cost</div>
+	                    <PoundSterling size={40} className="text-success" />
+	                  </div>
+	                  <h3 className="mb-1">£450,000</h3>
+	                  <div className="d-flex align-items-center gap-1" style={{ position: 'relative' }}>
+	                    <button
+	                      className="btn btn-link p-0 text-decoration-none d-flex align-items-center gap-1"
+	                      style={{ fontSize: '12px' }}
+	                      onMouseEnter={() => setShowCostBreakdown(true)}
+	                      onMouseLeave={() => setShowCostBreakdown(false)}
+	                    >
+	                      <Info size={14} className="text-primary" />
+	                      <span className="text-primary">View cost breakdown</span>
+	                    </button>
+	                    {showCostBreakdown && (
+	                      <div
+	                        className="position-absolute bg-white border rounded shadow-lg p-3"
+	                        style={{
+	                          top: '25px',
+	                          left: '0',
+	                          zIndex: 1000,
+	                          minWidth: '280px',
+	                          fontSize: '13px'
+	                        }}
+	                        onMouseEnter={() => setShowCostBreakdown(true)}
+	                        onMouseLeave={() => setShowCostBreakdown(false)}
+	                      >
+	                        <div className="fw-bold mb-2 pb-2 border-bottom">Cost Breakdown</div>
+	                        <div className="d-flex justify-content-between mb-2">
+	                          <span className="text-muted">Net cost of works:</span>
+	                          <span className="fw-medium">£405,000</span>
+	                        </div>
+	                        <div className="d-flex justify-content-between mb-1">
+	                          <span className="text-muted">Management fee:</span>
+	                          <span className="fw-medium">£40,500</span>
+	                        </div>
+	                        <div className="mb-2 ps-3">
+	                          <small className="text-muted" style={{ fontSize: '11px' }}>
+	                            (10% of net cost)
+	                          </small>
+	                        </div>
+	                        <div className="d-flex justify-content-between mb-1">
+	                          <span className="text-muted">Surveyor fee:</span>
+	                          <span className="fw-medium">£4,500</span>
+	                        </div>
+	                        <div className="mb-2 ps-3">
+	                          <small className="text-muted" style={{ fontSize: '11px' }}>
+	                            (6% of net cost)
+	                          </small>
+	                        </div>
+	                        <div className="border-top pt-2 mt-2">
+	                          <div className="d-flex justify-content-between">
+	                            <span className="fw-bold">Total (inc. VAT):</span>
+	                            <span className="fw-bold text-success">£450,000</span>
+	                          </div>
+	                        </div>
+	                      </div>
+	                    )}
+	                  </div>
+	                </div>
+	              </div>
+	            </div>
+	          </div>
 
-                <div className="col-md-3 mb-3">
-                  <div className="card border-0 shadow-sm h-100">
-                    <div className="card-body">
-                      <div className="d-flex justify-content-between align-items-start mb-2">
-                        <div className="text-muted small">Total Estimated Cost</div>
-                        <PoundSterling size={40} className={work.formData?.estimatedBudget ? "text-primary" : "text-muted opacity-50"} />
-                      </div>
-                      <h3 className={`mb-1 ${work.formData?.estimatedBudget ? "" : "text-muted"}`}>
-                        {work.formData?.estimatedBudget 
-                          ? `£${parseInt(work.formData.estimatedBudget).toLocaleString()}` 
-                          : '£0'}
-                      </h3>
-                      {work.formData?.estimatedBudget && (work.formData?.agentFeeValue || work.formData?.surveyorFeeValue) ? (
-                        <div className="d-flex align-items-center gap-1" style={{ position: 'relative' }}>
-                          <button 
-                            className="btn btn-link p-0 text-decoration-none d-flex align-items-center gap-1"
-                            style={{ fontSize: '12px' }}
-                            onMouseEnter={() => setShowCostBreakdown(true)}
-                            onMouseLeave={() => setShowCostBreakdown(false)}
-                          >
-                            <Info size={14} className="text-primary" />
-                            <span className="text-primary">View cost breakdown</span>
-                          </button>
-                          
-                          {/* Tooltip */}
-                          {showCostBreakdown && (() => {
-                            const estimatedBudget = parseFloat(work.formData.estimatedBudget);
-                            let agentFee = 0;
-                            let surveyorFee = 0;
-                            
-                            // Calculate management fee
-                            if (work.formData.agentFeeValue) {
-                              if (work.formData.agentFeeType === 'percentage') {
-                                agentFee = (estimatedBudget * parseFloat(work.formData.agentFeeValue)) / 100;
-                              } else {
-                                agentFee = parseFloat(work.formData.agentFeeValue);
-                              }
-                            }
-                            
-                            // Calculate surveyor fee
-                            if (work.formData.surveyorFeeValue) {
-                              if (work.formData.surveyorFeeType === 'percentage') {
-                                surveyorFee = (estimatedBudget * parseFloat(work.formData.surveyorFeeValue)) / 100;
-                              } else {
-                                surveyorFee = parseFloat(work.formData.surveyorFeeValue);
-                              }
-                            }
-                            
-                            const totalCost = estimatedBudget + agentFee + surveyorFee;
-                            
-                            return (
-                              <div 
-                                className="position-absolute bg-white border rounded shadow-lg p-3"
-                                style={{
-                                  top: '25px',
-                                  left: '0',
-                                  zIndex: 1000,
-                                  minWidth: '280px',
-                                  fontSize: '13px'
-                                }}
-                                onMouseEnter={() => setShowCostBreakdown(true)}
-                                onMouseLeave={() => setShowCostBreakdown(false)}
-                              >
-                                <div className="fw-bold mb-2 pb-2 border-bottom">Cost Breakdown</div>
-                                <div className="d-flex justify-content-between mb-2">
-                                  <span className="text-muted">Net cost of works:</span>
-                                  <span className="fw-medium">£{estimatedBudget.toLocaleString()}</span>
-                                </div>
-                                {work.formData.agentFeeValue && (
-                                  <>
-                                    <div className="d-flex justify-content-between mb-1">
-                                      <span className="text-muted">Management fee:</span>
-                                      <span className="fw-medium">£{agentFee.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                                    </div>
-                                    <div className="mb-2 ps-3">
-                                      <small className="text-muted" style={{ fontSize: '11px' }}>
-                                        ({work.formData.agentFeeType === 'percentage' 
-                                          ? `${work.formData.agentFeeValue}% of net cost`
-                                          : 'Fixed fee'})
-                                      </small>
-                                    </div>
-                                  </>
-                                )}
-                                {work.formData.surveyorFeeValue && (
-                                  <>
-                                    <div className="d-flex justify-content-between mb-1">
-                                      <span className="text-muted">Surveyor fee:</span>
-                                      <span className="fw-medium">£{surveyorFee.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
-                                    </div>
-                                    <div className="mb-2 ps-3">
-                                      <small className="text-muted" style={{ fontSize: '11px' }}>
-                                        ({work.formData.surveyorFeeType === 'percentage' 
-                                          ? `${work.formData.surveyorFeeValue}% of net cost`
-                                          : 'Fixed fee'})
-                                      </small>
-                                    </div>
-                                  </>
-                                )}
-                                <div className="border-top pt-2 mt-2">
-                                  <div className="d-flex justify-content-between">
-                                    <span className="fw-bold">Total (inc. VAT):</span>
-                                    <span className="fw-bold text-primary">£{totalCost.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}</span>
-                                  </div>
-                                </div>
-                              </div>
-                            );
-                          })()}
-                        </div>
-                      ) : (
-                        <div className="text-muted small">
-                          {work.formData?.estimatedBudget ? 'Estimated budget' : 'No estimates yet'}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              </div>
+	          <div className="row mb-4">
+		            <div className="col-12 mb-4">
+		              <div className="card shadow-sm" style={{ backgroundColor: '#FFFFFF', border: '1px solid #0d6efd' }}>
+		                <div className="card-body">
+		                  <div>
+		                    <div className="flex-grow-1">
+		                      <>
+		                        <div className="d-flex flex-wrap align-items-start justify-content-between gap-3 mb-2">
+		                          <div>
+		                            <div className="text-muted" style={{ fontSize: '12px' }}>Started</div>
+		                            <div className="fw-semibold" style={{ fontSize: '14px' }}>{aiTimelineProjection.startedOn}</div>
+		                          </div>
+		                          <div>
+		                            <div className="text-muted" style={{ fontSize: '12px' }}>Planned completion</div>
+		                            <div className="fw-semibold" style={{ fontSize: '14px' }}>{aiTimelineProjection.plannedCompletion}</div>
+		                          </div>
+		                          <div>
+		                            <div className="text-muted" style={{ fontSize: '12px' }}>Expected completion</div>
+		                            <div className="fw-semibold" style={{ fontSize: '14px' }}>{aiTimelineProjection.expectedCompletion}</div>
+		                          </div>
+		                          <div className="text-md-end">
+		                            <div className="text-muted" style={{ fontSize: '12px' }}>Estimated completion</div>
+		                            <div className="fw-semibold" style={{ fontSize: '14px' }}>
+		                              {aiTimelineProjection.expectedDurationDisplay}
+		                            </div>
+		                            <div className="text-muted" style={{ fontSize: '12px' }}>{aiTimelineProjection.forecastLabel}</div>
+		                          </div>
+		                        </div>
+		                        <div className="d-flex flex-wrap align-items-center gap-3 px-1 pb-2">
+		                          <div className="d-flex align-items-center gap-1">
+		                            <span style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#94A3B8', display: 'inline-block' }} />
+		                            <span className="text-muted" style={{ fontSize: '12px' }}>Planned timeline</span>
+		                          </div>
+		                          <div className="d-flex align-items-center gap-1">
+		                            <span style={{ width: '10px', height: '10px', borderRadius: '50%', backgroundColor: '#0B81C5', display: 'inline-block' }} />
+		                            <span className="text-muted" style={{ fontSize: '12px' }}>Expected timeline</span>
+		                          </div>
+		                        </div>
+		                        <ChartContainer config={aiOverviewChartConfig} className="h-[200px] w-full">
+		                          <LineChart data={aiTimelineProjection.chartData} margin={{ top: 6, right: 8, left: 8, bottom: 6 }}>
+		                            <CartesianGrid vertical={false} strokeDasharray="3 4" stroke="rgba(100,116,139,0.25)" />
+		                            <XAxis dataKey="checkpoint" axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#64748b' }} />
+		                            <YAxis domain={[0, 100]} axisLine={false} tickLine={false} tick={{ fontSize: 11, fill: '#64748b' }} width={32} />
+		                            <ChartTooltip content={<ChartTooltipContent indicator="line" />} />
+		                            <Line dataKey="planned" type="monotone" stroke="var(--color-planned)" strokeWidth={2.25} dot={false} />
+		                            <Line dataKey="projected" type="monotone" stroke="var(--color-projected)" strokeWidth={2.75} strokeDasharray="4 4" dot={false} />
+		                          </LineChart>
+		                        </ChartContainer>
+		                        <div className="d-flex flex-wrap justify-content-between gap-2 px-1 pt-2">
+		                          <div className="text-muted" style={{ fontSize: '12px' }}>
+		                            Current completion confidence: <span className="fw-semibold text-dark">{aiTimelineProjection.progressNow}%</span>
+		                          </div>
+		                          <div className="text-muted" style={{ fontSize: '12px' }}>
+		                            Planned duration: <span className="fw-semibold text-dark">{aiTimelineProjection.totalPlannedDays} days</span>
+		                          </div>
+		                          <div className="text-muted" style={{ fontSize: '12px' }}>
+		                            Projected duration: <span className="fw-semibold text-dark">{aiTimelineProjection.projectedTotalDays} days</span>
+		                          </div>
+		                        </div>
+		                      </>
+		                    </div>
+		                  </div>
+		                </div>
+		              </div>
+		            </div>
+	            <div className="col-12 mb-4">
+	              <div className="card border-0 shadow-sm h-100">
+	                <div className="card-body">
+	                  <h5 className="mb-2">Needs attention</h5>
+		                  {overviewAttentionItems.length > 0 ? (
+		                    <div className="rounded-3 border overflow-hidden">
+			                      {overviewAttentionItems.map((item, index) => (
+				                        <div
+				                          key={`${item.title}-${index}`}
+				                          className={`${index < overviewAttentionItems.length - 1 ? 'border-bottom' : ''}`}
+				                          style={{
+				                            borderLeftWidth: '4px',
+				                            borderLeftStyle: 'solid',
+				                            borderLeftColor: item.tone === 'warning' ? '#f59e0b' : '#e2e8f0',
+				                            backgroundColor:
+				                              item.tone === 'warning'
+				                                ? 'rgba(245, 158, 11, 0.06)'
+				                                : 'transparent'
+				                          }}
+				                        >
+				                          <div className="px-3 py-3">
+				                            <div className="d-flex flex-column flex-md-row justify-content-between gap-3">
+				                              <div className="flex-grow-1" style={{ minWidth: 0 }}>
+				                                <div className={`fw-medium mb-1 ${
+				                                  item.tone === 'warning' ? 'text-warning-emphasis' : 'text-dark'
+				                                }`} style={{ fontSize: '14px', lineHeight: 1.35 }}>
+				                                  {item.title}
+				                                </div>
+				                                {(item.where || item.when) && (
+				                                  <div className="small mb-1" style={{ color: '#475569', lineHeight: 1.35 }}>
+				                                    {item.where && <span className="fw-medium">{item.where}</span>}
+				                                    {item.where && item.when && <span className="mx-2">•</span>}
+				                                    {item.when && <span>{item.when}</span>}
+				                                  </div>
+				                                )}
+				                                <div className="text-muted small" style={{ lineHeight: 1.45, maxWidth: '72ch' }}>
+				                                  {item.detail}
+				                                </div>
+				                              </div>
+				                              <div className="d-flex flex-column align-items-start align-items-md-end justify-content-between gap-2 flex-shrink-0" style={{ minWidth: '150px' }}>
+				                                <span
+				                                  className="badge rounded-pill"
+				                                  style={{
+				                                    fontSize: '10px',
+				                                    fontWeight: 600,
+				                                    backgroundColor:
+				                                      item.tone === 'warning'
+				                                        ? 'rgba(245, 158, 11, 0.18)'
+				                                        : 'rgba(100, 116, 139, 0.12)',
+				                                    color: item.tone === 'warning' ? '#b45309' : '#475569'
+				                                  }}
+				                                >
+				                                  {item.source}
+				                                </span>
+				                                <button
+				                                  type="button"
+				                                  className="btn btn-sm btn-outline-secondary"
+				                                  style={{ minWidth: '132px' }}
+				                                  onClick={() => handleOverviewAction(item.targetTab, item.targetDocumentId)}
+				                                >
+				                                  {item.actionLabel}
+				                                </button>
+				                              </div>
+				                            </div>
+				                          </div>
+			                        </div>
+			                      ))}
+		                    </div>
+	                  ) : (
+	                    <div className="rounded-3 border p-3 text-muted small">
+	                      Nothing currently needs PM action on this case.
+	                    </div>
+	                  )}
+	                </div>
+	              </div>
+	            </div>
+		            <div className="col-12 mb-4">
+		              <div className="card border-0 shadow-sm h-100">
+		                <div className="card-body">
+		                  <h5 className="mb-2">Key updates</h5>
+			                  <div className="rounded-3 border overflow-hidden">
+			                    {overviewKeyUpdates.map((update, index) => (
+			                      <div
+			                        key={`${update.title}-${index}`}
+			                        className={`${index < overviewKeyUpdates.length - 1 ? 'border-bottom' : ''}`}
+			                        style={{
+			                          borderLeftWidth: '4px',
+			                          borderLeftStyle: 'solid',
+			                          borderLeftColor: update.tone === 'warning' ? '#f59e0b' : '#e2e8f0',
+			                          backgroundColor:
+			                            update.tone === 'warning'
+			                              ? 'rgba(245, 158, 11, 0.06)'
+			                              : 'transparent'
+			                        }}
+			                      >
+			                        <div className="px-3 py-3">
+			                          <div className="d-flex flex-column flex-md-row justify-content-between gap-3">
+			                            <div className="flex-grow-1" style={{ minWidth: 0 }}>
+			                              <div className={`fw-medium mb-1 ${
+			                                update.tone === 'warning' ? 'text-warning-emphasis' : 'text-dark'
+			                              }`} style={{ fontSize: '14px', lineHeight: 1.35 }}>
+			                                {update.title}
+			                              </div>
+			                              {(update.where || update.when) && (
+			                                <div className="small mb-1" style={{ color: '#475569', lineHeight: 1.35 }}>
+			                                  {update.where && <span className="fw-medium">{update.where}</span>}
+			                                  {update.where && update.when && <span className="mx-2">•</span>}
+			                                  {update.when && <span>{update.when}</span>}
+			                                </div>
+			                              )}
+			                              <div className="text-muted small" style={{ lineHeight: 1.45, maxWidth: '72ch' }}>
+			                                {update.detail}
+			                              </div>
+			                            </div>
+			                            <div className="d-flex flex-column align-items-start align-items-md-end justify-content-between gap-2 flex-shrink-0" style={{ minWidth: '150px' }}>
+			                              <span
+			                                className="badge rounded-pill"
+			                                style={{
+			                                  fontSize: '10px',
+			                                  fontWeight: 600,
+			                                  backgroundColor:
+			                                    update.tone === 'warning'
+			                                      ? 'rgba(245, 158, 11, 0.18)'
+			                                      : 'rgba(100, 116, 139, 0.12)',
+			                                  color: update.tone === 'warning' ? '#b45309' : '#475569'
+			                                }}
+			                              >
+			                                {update.source}
+			                              </span>
+			                              <button
+			                                type="button"
+			                                className="btn btn-sm btn-outline-secondary"
+			                                style={{ minWidth: '132px' }}
+			                                onClick={() => handleOverviewAction(update.targetTab, update.targetDocumentId)}
+			                              >
+			                                {update.actionLabel}
+			                              </button>
+			                            </div>
+			                          </div>
+			                        </div>
+			                      </div>
+			                    ))}
+			                  </div>
+		                </div>
+		              </div>
+		            </div>
+	          </div>
 
-              <div className="row mb-4">
-                {/* Risk & Compliance Indicators - Empty State */}
-                <div className="col-lg-7 mb-4">
-                  <div className="card border-0 shadow-sm h-100">
-                    <div className="card-body">
-                      <h5 className="mb-2">Risk & Compliance Indicators</h5>
-                      <p className="text-muted small mb-4">Real-time monitoring of key risk factors</p>
-
-                      <div className="row g-3">
-                        {/* Legal Compliance - Empty */}
-                        <div className="col-md-6">
-                          <div className="card border-secondary" style={{ backgroundColor: '#f8f9fa' }}>
-                            <div className="card-body">
-                              <div className="d-flex justify-content-between align-items-center mb-2">
-                                <div className="d-flex align-items-center gap-2">
-                                  <CheckCircle size={18} className="text-muted" />
-                                  <span className="fw-medium text-muted">Legal Compliance</span>
-                                </div>
-                                <h4 className="mb-0 text-muted">—</h4>
-                              </div>
-                              <div className="progress mb-2" style={{ height: '8px' }}>
-                                <div 
-                                  className="progress-bar bg-secondary" 
-                                  role="progressbar" 
-                                  style={{ width: '0%' }}
-                                  aria-valuenow={0} 
-                                  aria-valuemin={0} 
-                                  aria-valuemax={100}
-                                />
-                              </div>
-                              <small className="text-muted">No data available</small>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Budget Status - Empty */}
-                        <div className="col-md-6">
-                          <div className="card border-secondary" style={{ backgroundColor: '#f8f9fa' }}>
-                            <div className="card-body">
-                              <div className="d-flex justify-content-between align-items-center mb-2">
-                                <div className="d-flex align-items-center gap-2">
-                                  <AlertCircle size={18} className="text-muted" />
-                                  <span className="fw-medium text-muted">Budget Status</span>
-                                </div>
-                                <h4 className="mb-0 text-muted">—</h4>
-                              </div>
-                              <div className="progress mb-2" style={{ height: '8px' }}>
-                                <div 
-                                  className="progress-bar bg-secondary" 
-                                  role="progressbar" 
-                                  style={{ width: '0%' }}
-                                  aria-valuenow={0} 
-                                  aria-valuemin={0} 
-                                  aria-valuemax={100}
-                                />
-                              </div>
-                              <small className="text-muted">No data available</small>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Timeline Risk - Empty */}
-                        <div className="col-md-6">
-                          <div className="card border-secondary" style={{ backgroundColor: '#f8f9fa' }}>
-                            <div className="card-body">
-                              <div className="d-flex justify-content-between align-items-center mb-2">
-                                <div className="d-flex align-items-center gap-2">
-                                  <AlertTriangle size={18} className="text-muted" />
-                                  <span className="fw-medium text-muted">Timeline Risk</span>
-                                </div>
-                                <h4 className="mb-0 text-muted">—</h4>
-                              </div>
-                              <div className="progress mb-2" style={{ height: '8px' }}>
-                                <div 
-                                  className="progress-bar bg-secondary" 
-                                  role="progressbar" 
-                                  style={{ width: '0%' }}
-                                  aria-valuenow={0} 
-                                  aria-valuemin={0} 
-                                  aria-valuemax={100}
-                                />
-                              </div>
-                              <small className="text-muted">No data available</small>
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Engagement Quality - Empty */}
-                        <div className="col-md-6">
-                          <div className="card border-secondary" style={{ backgroundColor: '#f8f9fa' }}>
-                            <div className="card-body">
-                              <div className="d-flex justify-content-between align-items-center mb-2">
-                                <div className="d-flex align-items-center gap-2">
-                                  <CheckCircle size={18} className="text-muted" />
-                                  <span className="fw-medium text-muted">Engagement Quality</span>
-                                </div>
-                                <h4 className="mb-0 text-muted">—</h4>
-                              </div>
-                              <div className="progress mb-2" style={{ height: '8px' }}>
-                                <div 
-                                  className="progress-bar bg-secondary" 
-                                  role="progressbar" 
-                                  style={{ width: '0%' }}
-                                  aria-valuenow={0} 
-                                  aria-valuemin={0} 
-                                  aria-valuemax={100}
-                                />
-                              </div>
-                              <small className="text-muted">No data available</small>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                {/* Response Trend - Empty State */}
-                <div className="col-lg-5 mb-4">
-                  <div className="card border-0 shadow-sm h-100">
-                    <div className="card-body">
-                      <h5 className="mb-2">Response Trend</h5>
-                      <p className="text-muted small mb-4">Weekly progress vs target</p>
-                      
-                      <div className="d-flex align-items-center justify-content-center" style={{ height: '250px' }}>
-                        <div className="text-center">
-                          <div className="d-flex justify-content-center mb-3">
-                            <Clock size={48} className="text-muted opacity-50" />
-                          </div>
-                          <p className="text-muted mb-0">No response data yet</p>
-                          <p className="text-muted small">Chart will appear when consultation begins</p>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              <div className="row">
-                {/* Contractor Performance - Empty State */}
-                <div className="col-lg-7 mb-4">
-                  <div className="card border-0 shadow-sm">
-                    <div className="card-body">
-                      <h5 className="mb-2">Contractor Performance</h5>
-                      <p className="text-muted small mb-4">Quote delivery and timeline performance</p>
-
-                      <div className="table-responsive">
-                        <table className="table">
-                          <tbody>
-                            <tr>
-                              <td className="border-0 text-center py-5" colSpan={3}>
-                                <div className="d-flex justify-content-center mb-3">
-                                  <Briefcase size={48} className="text-muted opacity-50" />
-                                </div>
-                                <p className="text-muted mb-0">No contractor data available</p>
-                                <p className="text-muted small">Contractor information will appear during the tender stage</p>
-                              </td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="col-lg-5 mb-4">
-                  <div className="card border-0 shadow-sm h-100">
-                    <div className="card-body">
-                      <div className="d-flex align-items-center gap-2 mb-4">
-                        <Users size={20} className="text-muted" />
-                        <h5 className="mb-0">Leaseholder observations</h5>
-                      </div>
-
-                      <div className="mb-4">
-                        <div className="d-flex justify-content-between align-items-center mb-2">
-                          <span className="text-muted">Overall Response Rate</span>
-                          <span className="fw-bold">{observationResponseRate}%</span>
-                        </div>
-                        <div className="progress" style={{ height: '10px' }}>
-                          <div 
-                            className={`progress-bar ${observationResponseRate > 0 ? 'bg-dark' : 'bg-secondary'}`}
-                            role="progressbar" 
-                            style={{ width: `${observationResponseRate}%` }}
-                            aria-valuenow={observationResponseRate} 
-                            aria-valuemin={0} 
-                            aria-valuemax={100}
-                          />
-                        </div>
-                      </div>
-
-                      <div className="row g-3 mb-3">
-                        <div className="col-6">
-                          <div className="text-muted small mb-1">Total leaseholders</div>
-                          <div className="h4 mb-0">{leaseholderCount}</div>
-                        </div>
-                        <div className="col-6">
-                          <div className="text-muted small mb-1">Leaseholders responded</div>
-                          <div className={`h4 mb-0 ${respondedLeaseholderCount === 0 ? 'text-muted' : ''}`}>
-                            {respondedLeaseholderCount}
-                          </div>
-                        </div>
-                      </div>
-
-                      <div>
-                        <div className="text-muted small mb-1">Latest response</div>
-                        <div className={`fw-semibold small ${!latestObservation ? 'text-muted' : ''}`}>
-                          {latestObservationLabel}
-                        </div>
-                      </div>
-
-                      <div className="mt-3">
-                        <div className="text-muted small mb-1">Objections Received</div>
-                        <div className={`h4 mb-0 ${objectionCount === 0 ? 'text-muted' : ''}`}>
-                          {objectionCount === 0 ? 'No objections logged' : `${objectionCount} issue${objectionCount === 1 ? '' : 's'} raised`}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-
-              {/* Recent Comments Widget - Empty State */}
-              <div className="row">
-                <div className="col-12 mb-4">
-                  <div className="card border-0 shadow-sm">
-                    <div className="card-body">
-                      <div className="d-flex align-items-center justify-content-between mb-4">
-                        <div className="d-flex align-items-center gap-2">
-                          <MessageSquare size={20} className="text-muted" />
-                          <h5 className="mb-0">Recent Comments</h5>
-                        </div>
-                        <button 
-                          className="btn btn-link text-decoration-none p-0 text-muted"
-                          onClick={() => setActiveTab('comments')}
-                        >
-                          View all
-                        </button>
-                      </div>
-
-                      <div className="text-center py-4 text-muted">
-                        <MessageSquare size={48} className="mb-3 opacity-50" />
-                        <p className="mb-0">No comments yet</p>
-                        <p className="small">Start a conversation about this project</p>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </>
-          ) : (
-            <>
-          {/* Stats Cards */}
-          <div className="row mb-4">
-            <div className="col-md-3 mb-3">
-              <div className="card border-0 shadow-sm h-100">
-                <div className="card-body">
-                  <div className="d-flex justify-content-between align-items-start mb-2">
-                    <div className="text-muted small">Total Issues</div>
-                    <FileText size={40} className="text-primary" />
-                  </div>
-                  <h3 className="mb-1">6</h3>
-                  <div className="text-muted small">Across all stages</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="col-md-3 mb-3">
-              <div className="card border-0 shadow-sm h-100">
-                <div className="card-body">
-                  <div className="d-flex justify-content-between align-items-start mb-2">
-                    <div className="text-muted small">Active Contractors</div>
-                    <Briefcase size={40} className="text-primary" />
-                  </div>
-                  <h3 className="mb-1">8</h3>
-                  <div className="text-muted small">4 pending quotes</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="col-md-3 mb-3">
-              <div className="card border-0 shadow-sm h-100">
-                <div className="card-body">
-                  <div className="d-flex justify-content-between align-items-start mb-2">
-                    <div className="text-muted small">Leaseholder Responses</div>
-                    <MessageSquare size={40} className="text-primary" />
-                  </div>
-                  <h3 className="mb-1">47/70</h3>
-                  <div className="text-muted small">67% response rate</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="col-md-3 mb-3">
-              <div className="card border-0 shadow-sm h-100">
-                <div className="card-body">
-                  <div className="d-flex justify-content-between align-items-start mb-2">
-                    <div className="text-muted small">Total Estimated Cost</div>
-                    <PoundSterling size={40} className="text-success" />
-                  </div>
-                  <h3 className="mb-1">£450,000</h3>
-                  <div className="d-flex align-items-center gap-1" style={{ position: 'relative' }}>
-                    <button 
-                      className="btn btn-link p-0 text-decoration-none d-flex align-items-center gap-1"
-                      style={{ fontSize: '12px' }}
-                      onMouseEnter={() => setShowCostBreakdown(true)}
-                      onMouseLeave={() => setShowCostBreakdown(false)}
-                    >
-                      <Info size={14} className="text-primary" />
-                      <span className="text-primary">View cost breakdown</span>
-                    </button>
-                    
-                    {/* Tooltip */}
-                    {showCostBreakdown && (
-                      <div 
-                        className="position-absolute bg-white border rounded shadow-lg p-3"
-                        style={{
-                          top: '25px',
-                          left: '0',
-                          zIndex: 1000,
-                          minWidth: '280px',
-                          fontSize: '13px'
-                        }}
-                        onMouseEnter={() => setShowCostBreakdown(true)}
-                        onMouseLeave={() => setShowCostBreakdown(false)}
-                      >
-                        <div className="fw-bold mb-2 pb-2 border-bottom">Cost Breakdown</div>
-                        <div className="d-flex justify-content-between mb-2">
-                          <span className="text-muted">Net cost of works:</span>
-                          <span className="fw-medium">£405,000</span>
-                        </div>
-                        <div className="d-flex justify-content-between mb-1">
-                          <span className="text-muted">Management fee:</span>
-                          <span className="fw-medium">£40,500</span>
-                        </div>
-                        <div className="mb-2 ps-3">
-                          <small className="text-muted" style={{ fontSize: '11px' }}>
-                            (10% of net cost)
-                          </small>
-                        </div>
-                        <div className="d-flex justify-content-between mb-1">
-                          <span className="text-muted">Surveyor fee:</span>
-                          <span className="fw-medium">£4,500</span>
-                        </div>
-                        <div className="mb-2 ps-3">
-                          <small className="text-muted" style={{ fontSize: '11px' }}>
-                            (6% of net cost)
-                          </small>
-                        </div>
-                        <div className="border-top pt-2 mt-2">
-                          <div className="d-flex justify-content-between">
-                            <span className="fw-bold">Total (inc. VAT):</span>
-                            <span className="fw-bold text-success">£450,000</span>
-                          </div>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="row mb-4">
-            {/* Risk & Compliance Indicators */}
-            <div className="col-lg-7 mb-4">
-              <div className="card border-0 shadow-sm h-100">
-                <div className="card-body">
-                  <h5 className="mb-2">Risk & Compliance Indicators</h5>
-                  <p className="text-muted small mb-4">Real-time monitoring of key risk factors</p>
-
-                  <div className="row g-3">
-                    {/* Legal Compliance */}
-                    <div className="col-md-6">
-                      <div className="card border-success" style={{ backgroundColor: '#d1f4e0' }}>
-                        <div className="card-body">
-                          <div className="d-flex justify-content-between align-items-center mb-2">
-                            <div className="d-flex align-items-center gap-2">
-                              <CheckCircle size={18} className="text-success" />
-                              <span className="fw-medium text-success">Legal Compliance</span>
-                            </div>
-                            <h4 className="mb-0 text-success">95%</h4>
-                          </div>
-                          <div className="progress mb-2" style={{ height: '8px' }}>
-                            <div 
-                              className="progress-bar bg-success" 
-                              role="progressbar" 
-                              style={{ width: '95%' }}
-                              aria-valuenow={95} 
-                              aria-valuemin={0} 
-                              aria-valuemax={100}
-                            />
-                          </div>
-                          <small className="text-success">All notices sent on time</small>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Budget Status */}
-                    <div className="col-md-6">
-                      <div className="card border-warning" style={{ backgroundColor: '#FEF3C7' }}>
-                        <div className="card-body">
-                          <div className="d-flex justify-content-between align-items-center mb-2">
-                            <div className="d-flex align-items-center gap-2">
-                              <AlertCircle size={18} className="text-warning" />
-                              <span className="fw-medium text-warning">Budget Status</span>
-                            </div>
-                            <h4 className="mb-0 text-warning">72%</h4>
-                          </div>
-                          <div className="progress mb-2" style={{ height: '8px' }}>
-                            <div 
-                              className="progress-bar bg-warning" 
-                              role="progressbar" 
-                              style={{ width: '72%' }}
-                              aria-valuenow={72} 
-                              aria-valuemin={0} 
-                              aria-valuemax={100}
-                            />
-                          </div>
-                          <small className="text-warning">3 issues pending final quotes</small>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Timeline Risk */}
-                    <div className="col-md-6">
-                      <div className="card border-danger" style={{ backgroundColor: '#ffe6e6' }}>
-                        <div className="card-body">
-                          <div className="d-flex justify-content-between align-items-center mb-2">
-                            <div className="d-flex align-items-center gap-2">
-                              <AlertTriangle size={18} className="text-danger" />
-                              <span className="fw-medium text-danger">Timeline Risk</span>
-                            </div>
-                            <h4 className="mb-0 text-danger">45%</h4>
-                          </div>
-                          <div className="progress mb-2" style={{ height: '8px' }}>
-                            <div 
-                              className="progress-bar bg-danger" 
-                              role="progressbar" 
-                              style={{ width: '45%' }}
-                              aria-valuenow={45} 
-                              aria-valuemin={0} 
-                              aria-valuemax={100}
-                            />
-                          </div>
-                          <small className="text-danger">2 issues behind schedule</small>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Engagement Quality */}
-                    <div className="col-md-6">
-                      <div className="card border-success" style={{ backgroundColor: '#d1f4e0' }}>
-                        <div className="card-body">
-                          <div className="d-flex justify-content-between align-items-center mb-2">
-                            <div className="d-flex align-items-center gap-2">
-                              <CheckCircle size={18} className="text-success" />
-                              <span className="fw-medium text-success">Engagement Quality</span>
-                            </div>
-                            <h4 className="mb-0 text-success">88%</h4>
-                          </div>
-                          <div className="progress mb-2" style={{ height: '8px' }}>
-                            <div 
-                              className="progress-bar bg-success" 
-                              role="progressbar" 
-                              style={{ width: '88%' }}
-                              aria-valuenow={88} 
-                              aria-valuemin={0} 
-                              aria-valuemax={100}
-                            />
-                          </div>
-                          <small className="text-success">Response rate above target</small>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Response Trend */}
-            <div className="col-lg-5 mb-4">
-              <div className="card border-0 shadow-sm h-100">
-                <div className="card-body">
-                  <h5 className="mb-2">Response Trend</h5>
-                  <p className="text-muted small mb-4">Weekly progress vs target</p>
-                  
-                  <ResponsiveContainer width="100%" height={250}>
-                    <LineChart data={chartData}>
-                      <CartesianGrid key="grid" strokeDasharray="3 3" stroke="#e0e0e0" />
-                      <XAxis 
-                        key="x-axis"
-                        dataKey="week" 
-                        tick={{ fontSize: 12 }}
-                        stroke="#6c757d"
-                      />
-                      <YAxis 
-                        key="y-axis"
-                        tick={{ fontSize: 12 }}
-                        stroke="#6c757d"
-                      />
-                      <Tooltip key="tooltip" />
-                      <Legend 
-                        key="legend"
-                        iconType="circle"
-                        wrapperStyle={{ fontSize: '12px' }}
-                      />
-                      <Line 
-                        key="actual-line"
-                        type="monotone" 
-                        dataKey="actual" 
-                        stroke="#0d6efd" 
-                        strokeWidth={2}
-                        name="Actual responses"
-                        dot={{ r: 4 }}
-                      />
-                      <Line 
-                        key="target-line"
-                        type="monotone" 
-                        dataKey="target" 
-                        stroke="#6c757d" 
-                        strokeWidth={2}
-                        strokeDasharray="5 5"
-                        name="Target"
-                        dot={{ r: 4 }}
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="row">
-            {/* Contractor Performance */}
-            <div className="col-lg-7 mb-4">
-              <div className="card border-0 shadow-sm">
-                <div className="card-body">
-                  <h5 className="mb-2">Contractor Performance</h5>
-                  <p className="text-muted small mb-4">Quote delivery and timeline performance</p>
-
-                  <div className="table-responsive">
-                    <table className="table">
-                      <tbody>
-                        {contractors.map((contractor, index) => (
-                          <tr key={index}>
-                            <td className="border-0">
-                              <div className="fw-medium">{contractor.name}</div>
-                              <div className="text-muted small">{contractor.quotes} quotes submitted</div>
-                            </td>
-                            <td className="border-0">
-                              <div className="text-muted small">Avg Response</div>
-                              <div className="d-flex align-items-center gap-1">
-                                <Clock size={14} className="text-primary" />
-                                <span className="fw-medium">{contractor.avgResponse}</span>
-                              </div>
-                            </td>
-                            <td className="border-0">
-                              <div className="text-muted small">On-Time Rate</div>
-                              <div className="d-flex align-items-center gap-1">
-                                <CheckCircle size={14} className="text-success" />
-                                <span className="fw-medium">{contractor.onTimeRate}%</span>
-                              </div>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="col-lg-5 mb-4">
-              <div className="card border-0 shadow-sm h-100">
-                <div className="card-body">
-                  <div className="d-flex align-items-center gap-2 mb-4">
-                    <Users size={20} />
-                    <h5 className="mb-0">Leaseholder observations</h5>
-                  </div>
-
-                  <div className="mb-4">
-                    <div className="d-flex justify-content-between align-items-center mb-2">
-                      <span className="text-muted">Overall Response Rate</span>
-                      <span className="fw-bold">{observationResponseRate}%</span>
-                    </div>
-                    <div className="progress" style={{ height: '10px' }}>
-                      <div 
-                        className="progress-bar bg-dark" 
-                        role="progressbar" 
-                        style={{ width: `${observationResponseRate}%` }}
-                        aria-valuenow={observationResponseRate} 
-                        aria-valuemin={0} 
-                        aria-valuemax={100}
-                      />
-                    </div>
-                  </div>
-
-                  <div className="row g-3 mb-3">
-                    <div className="col-6">
-                      <div className="text-muted small mb-1">Total leaseholders</div>
-                      <div className="h4 mb-0">{leaseholderCount}</div>
-                    </div>
-                    <div className="col-6">
-                      <div className="text-muted small mb-1">Leaseholders responded</div>
-                      <div className={`h4 mb-0 ${respondedLeaseholderCount === 0 ? 'text-muted' : ''}`}>
-                        {respondedLeaseholderCount}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div>
-                    <div className="text-muted small mb-1">Latest response</div>
-                    <div className={`fw-semibold small ${!latestObservation ? 'text-muted' : ''}`}>
-                      {latestObservationLabel}
-                    </div>
-                  </div>
-
-                  <div className="mt-3">
-                    <div className="text-muted small mb-1">Objections Received</div>
-                    <div className="h4 mb-0">
-                      {objectionCount === 0 ? 'No objections logged' : `${objectionCount} issue${objectionCount === 1 ? '' : 's'} raised`}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Recent Comments Widget */}
-          <div className="row">
-            <div className="col-12 mb-4">
-              <div className="card border-0 shadow-sm">
-                <div className="card-body">
-                  <div className="d-flex align-items-center justify-content-between mb-4">
-                    <div className="d-flex align-items-center gap-2">
-                      <MessageSquare size={20} className="text-primary" />
-                      <h5 className="mb-0">Recent Comments</h5>
-                    </div>
-                    <button 
-                      className="btn btn-link text-decoration-none p-0"
-                      onClick={() => setActiveTab('comments')}
-                      style={{ color: '#0b81c5' }}
-                    >
-                      View all
-                    </button>
-                  </div>
-
-                  {visibleComments.length === 0 ? (
-                    <div className="text-center py-4 text-muted">
-                      <MessageSquare size={48} className="mb-3 opacity-50" />
-                      <p className="mb-0">No comments yet</p>
-                    </div>
-                  ) : (
-                    <div className="d-flex flex-column gap-3">
-                      {visibleComments.slice(0, 3).map((comment) => (
-                        <div key={comment.id} className="d-flex gap-3 pb-3 border-bottom last-child-no-border">
-                          <div className="rounded-circle bg-primary text-white d-flex align-items-center justify-content-center" style={{ width: '36px', height: '36px', flexShrink: 0, fontSize: '12px', fontWeight: '600' }}>
-                            {comment.avatar}
-                          </div>
-                          <div className="flex-grow-1">
-                            <div className="d-flex align-items-center gap-2 mb-1">
-                              <span className="fw-semibold" style={{ fontSize: '13px' }}>{comment.author}</span>
-                              <span className="badge bg-light text-dark" style={{ fontSize: '10px', fontWeight: '500' }}>
-                                {comment.role}
-                              </span>
-                              <span className="text-muted small ms-auto">{comment.timestamp}</span>
-                            </div>
-                            <p className="mb-0 text-muted" style={{ fontSize: '13px' }}>
-                              {comment.comment.length > 120 ? comment.comment.substring(0, 120) + '...' : comment.comment}
-                            </p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          </div>
-            </>
-          )}
+	            </>
+	          )}
         </>
       )}
 

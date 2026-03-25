@@ -100,7 +100,7 @@ const templates: ConsultationTemplate[] = [
     id: 'statement_of_estimate',
     purpose: 'notice',
     label: 'Statement of estimate',
-    description: 'Issue estimates and invite observations.',
+    description: 'Issue estimates for consultation review.',
     documentType: 'estimate',
     defaultStage: 'Statement of estimate',
     defaultRecipients: ['leaseholders', 'directors']
@@ -136,7 +136,7 @@ const templates: ConsultationTemplate[] = [
     id: 'estimate_pack',
     purpose: 'tender',
     label: 'Estimate pack',
-    description: 'Issue estimate pack for consultation.',
+    description: 'Issue estimate pack for review and comparison.',
     documentType: 'estimate',
     defaultStage: 'Statement of estimate',
     defaultRecipients: ['leaseholders', 'directors']
