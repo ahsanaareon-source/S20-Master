@@ -1821,6 +1821,12 @@ Date of notice: [Insert date]`;
       ];
     }
 
+    const onTrackNoActionDemoWorkIds = new Set(['13']);
+    const isNoActionScenario = work.status === 'Completed' || onTrackNoActionDemoWorkIds.has(String(work.id));
+    if (isNoActionScenario) {
+      return [];
+    }
+
     const items: { source: string; title: string; where?: string; when?: string; detail: string; tone: 'critical' | 'warning' | 'info' | 'secondary'; actionLabel: string; targetTab: 'documents' | 'issues' | 'comments'; targetDocumentId?: string | number; }[] = [];
 
     if (objectionCount > 0 && isObservationPriorityStage) {
@@ -1914,48 +1920,6 @@ Date of notice: [Insert date]`;
       });
     }
 
-    // Demo coverage: ensure all urgency bands are visible at least once.
-    if (!items.some(item => item.tone === 'critical')) {
-      items.unshift({
-        source: 'Delivery',
-        title: '3 emails bounced back',
-        where: currentStageDocuments[0]?.name || 'Consultation notice',
-        when: currentStageDocuments[0]?.sentDate || currentStageDocuments[0]?.lastUpdated,
-        detail: 'Three leaseholders were not served successfully and need immediate re-send action.',
-        tone: 'critical',
-        actionLabel: 'Open delivery',
-        targetTab: 'documents',
-        targetDocumentId: currentStageDocuments[0]?.id
-      });
-    }
-
-    if (!items.some(item => item.tone === 'warning')) {
-      items.push({
-        source: 'Observations',
-        title: '1 response still open',
-        where: observationNoticeSummaries[0]?.documentName || 'Active consultation notice',
-        when: observationNoticeSummaries[0]?.latestReceivedOn ? new Date(observationNoticeSummaries[0].latestReceivedOn).toLocaleDateString('en-GB') : undefined,
-        detail: 'A leaseholder response still needs acknowledgement before closeout.',
-        tone: 'warning',
-        actionLabel: 'Review observations',
-        targetTab: 'documents',
-        targetDocumentId: observationNoticeSummaries[0]?.documentId
-      });
-    }
-
-    if (!items.some(item => item.tone === 'info')) {
-      items.push({
-        source: 'Status',
-        title: 'No immediate action needed',
-        where: 'Consultation workflow',
-        when: currentStageDocuments[0]?.lastUpdated ? new Date(currentStageDocuments[0].lastUpdated).toLocaleDateString('en-GB') : undefined,
-        detail: 'Current consultation items are progressing without urgent blockers.',
-        tone: 'info',
-        actionLabel: 'Open documents',
-        targetTab: 'documents'
-      });
-    }
-
     return items.slice(0, 4);
   }, [
     contractorQuoteData,
@@ -1964,7 +1928,8 @@ Date of notice: [Insert date]`;
     isObservationPriorityStage,
     objectionCount,
     unresolvedObservationCount,
-    work.id
+    work.id,
+    work.status
   ]);
 
   const overviewKeyUpdates = useMemo(() => {
@@ -4080,7 +4045,7 @@ Date of notice: [Insert date]`;
 		                    </div>
 	                  ) : (
 	                    <div className="rounded-3 border p-3 text-muted small">
-	                      Nothing currently needs PM action on this case.
+	                      All good. No immediate actions are needed and this major works is currently on track.
 	                    </div>
 	                  )}
 	                </div>
