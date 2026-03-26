@@ -4003,7 +4003,7 @@ Date of notice: [Insert date]`;
 				                        >
 				                          <div className="px-4 py-4">
 				                            <div className="d-flex flex-column flex-md-row justify-content-between align-items-start gap-3">
-				                              <div className="flex-grow-1" style={{ minWidth: 0 }}>
+				                            <div style={{ minWidth: 0 }}>
 				                                <div className="d-flex align-items-start gap-2 mb-2 flex-wrap">
 				                                  <span
 				                                    className="badge rounded-pill"
@@ -4051,8 +4051,15 @@ Date of notice: [Insert date]`;
 				                                <div style={{ color: '#475467', fontSize: '13px', fontWeight: 500, lineHeight: 1.55, maxWidth: '72ch' }}>
 				                                  {item.detail}
 				                                </div>
-				                              </div>
-				                              <div className="d-flex flex-column align-items-start align-items-md-end gap-3 flex-shrink-0" style={{ minWidth: '180px' }}>
+				                                <button
+				                                  type="button"
+				                                  className="btn btn-sm btn-link p-0 text-decoration-none mt-2"
+				                                  onClick={() => handleOverviewAction(item.targetTab, item.targetDocumentId)}
+				                                >
+				                                  {item.actionLabel}
+				                                </button>
+				                            </div>
+				                              <div className="d-flex flex-column align-items-start align-items-md-end gap-2 flex-shrink-0" style={{ minWidth: '150px' }}>
 				                                <span
 				                                  className="badge rounded-pill"
 				                                  style={{
@@ -4065,18 +4072,10 @@ Date of notice: [Insert date]`;
 				                                >
 				                                  {item.source}
 				                                </span>
-				                                <button
-				                                  type="button"
-				                                  className="btn btn-sm btn-outline-secondary"
-				                                  style={{ minWidth: '150px' }}
-				                                  onClick={() => handleOverviewAction(item.targetTab, item.targetDocumentId)}
-				                                >
-				                                  {item.actionLabel}
-				                                </button>
 				                              </div>
-				                            </div>
+				                              </div>
 				                          </div>
-			                        </div>
+				                        </div>
 			                      ))}
 		                    </div>
 	                  ) : (
@@ -4091,42 +4090,18 @@ Date of notice: [Insert date]`;
 		              <div className="card border-0 shadow-sm h-100">
 		                <div className="card-body">
 		                  <h5 className="mb-2">Key updates</h5>
-			                  <div className="rounded-3 border bg-white p-3">
-			                    {overviewKeyUpdates.map((update, index) => {
-			                      const toneColor = '#64748b';
-
-			                      return (
-			                        <div
-			                          key={`${update.title}-${index}`}
-			                          className={`d-flex gap-3 ${index < overviewKeyUpdates.length - 1 ? 'pb-3 mb-3 border-bottom' : ''}`}
-			                        >
-			                          <div className="d-flex flex-column align-items-center flex-shrink-0" style={{ width: '16px' }}>
-			                            <span
-			                              className="rounded-circle"
-			                              style={{
-			                                width: '10px',
-			                                height: '10px',
-			                                marginTop: '5px',
-			                                backgroundColor: toneColor
-			                              }}
-			                            />
-			                            {index < overviewKeyUpdates.length - 1 && (
-			                              <span
-			                                style={{
-			                                  width: '2px',
-			                                  flexGrow: 1,
-			                                  marginTop: '6px',
-			                                  backgroundColor: '#e2e8f0'
-			                                }}
-			                              />
-			                            )}
-			                          </div>
-
-			                          <div className="flex-grow-1" style={{ minWidth: 0 }}>
-			                            <div className="d-flex flex-column flex-md-row justify-content-between align-items-start gap-2 mb-1">
-			                              <div className="fw-medium text-dark" style={{ fontSize: '14px', lineHeight: 1.35 }}>
-			                                {update.title}
-			                              </div>
+			                  <div className="rounded-3 bg-white p-3">
+				                    {overviewKeyUpdates.map((update, index) => {
+				                      return (
+				                        <div
+				                          key={`${update.title}-${index}`}
+				                          className={`${index < overviewKeyUpdates.length - 1 ? 'pb-3 mb-3 border-bottom' : ''}`}
+				                        >
+				                          <div style={{ minWidth: 0 }}>
+				                            <div className="d-flex flex-column flex-md-row justify-content-between align-items-start gap-2 mb-1">
+				                              <div className="fw-bold text-dark" style={{ fontSize: '16px', lineHeight: 1.3, letterSpacing: '-0.01em' }}>
+				                                  {update.title}
+				                                </div>
 				                              <span
 				                                className="badge rounded-pill"
 				                                style={{
@@ -4136,33 +4111,33 @@ Date of notice: [Insert date]`;
 				                                  backgroundColor: 'rgba(100, 116, 139, 0.12)',
 				                                  color: '#475569'
 				                                }}
-			                              >
-			                                {update.source}
-			                              </span>
-			                            </div>
-			                            {(update.where || update.when || update.actor) && (
-			                              <div className="small mb-1" style={{ color: '#475569', lineHeight: 1.35 }}>
-			                                {update.where && <span className="fw-medium">{update.where}</span>}
-			                                {update.where && (update.when || update.actor) && <span className="mx-2">•</span>}
-			                                {update.when && <span>{update.when}</span>}
-			                                {update.when && update.actor && <span className="mx-2">•</span>}
-			                                {update.actor && <span>by {update.actor}</span>}
-			                              </div>
-			                            )}
-			                            <div className="text-muted small mb-1" style={{ lineHeight: 1.45, maxWidth: '72ch' }}>
-			                              {update.detail}
-			                            </div>
-			                            <button
-			                              type="button"
-			                              className="btn btn-sm btn-link p-0 text-decoration-none"
-			                              onClick={() => handleOverviewAction(update.targetTab, update.targetDocumentId)}
-			                            >
-			                              {update.actionLabel}
-			                            </button>
-			                          </div>
-			                        </div>
-			                      );
-			                    })}
+				                              >
+				                                {update.source}
+				                              </span>
+				                            </div>
+				                                {(update.where || update.when || update.actor) && (
+				                                  <div className="mb-1" style={{ color: '#344054', fontSize: '13px', fontWeight: 600, lineHeight: 1.4 }}>
+				                                    {update.where && <span className="fw-medium">{update.where}</span>}
+				                                    {update.where && (update.when || update.actor) && <span>{' • '}</span>}
+				                                    {update.when && <span>{update.when}</span>}
+				                                    {update.when && update.actor && <span>{' • '}</span>}
+				                                    {update.actor && <span>by {update.actor}</span>}
+				                                  </div>
+				                                )}
+				                            <div style={{ color: '#475467', fontSize: '13px', fontWeight: 500, lineHeight: 1.55, maxWidth: '72ch' }}>
+				                              {update.detail}
+				                            </div>
+				                            <button
+				                              type="button"
+				                              className="btn btn-sm btn-link p-0 text-decoration-none"
+				                              onClick={() => handleOverviewAction(update.targetTab, update.targetDocumentId)}
+				                            >
+				                              {update.actionLabel}
+				                            </button>
+				                          </div>
+				                        </div>
+				                      );
+				                    })}
 			                  </div>
 		                </div>
 		              </div>
