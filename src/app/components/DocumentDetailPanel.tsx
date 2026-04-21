@@ -187,20 +187,10 @@ Date of notice: [Insert date]`
   const hasGeneratedPostalPack = Boolean(document.postalPackGeneratedAt);
   const hasEmailDelivery = Boolean(document.emailSentAt);
   const canGeneratePostalPack = isTemplateConsultationDocument && !isEditingTemplate;
-  const canMarkSent =
-    !isProjectDocument &&
-    !document.sentDate &&
-    (isUploadedConsultationDocument ? hasEmailDelivery : hasGeneratedPostalPack || hasEmailDelivery);
+  const canMarkSent = !isProjectDocument && !document.sentDate;
   const isConsultationDocument = !isProjectDocument;
-  const observationEligibleKeys = ['notice-of-intention', 'statement-of-estimate', 'notice-of-reasons'];
-  const isObservationDocument =
-    isConsultationDocument &&
-    [
-      normalizeDocumentKey(document.stage),
-      normalizeDocumentKey(document.name),
-      normalizeDocumentKey(document.templateId),
-      normalizeDocumentKey(document.templateName)
-    ].some(value => observationEligibleKeys.includes(value));
+  const isNoticeDocumentType = normalizeDocumentKey(document.type) === 'notice';
+  const isObservationDocument = isConsultationDocument && isNoticeDocumentType;
   const isLeaseholderNotice =
     isObservationDocument &&
     document.recipients?.some((recipient: any) => recipient.label === 'Leaseholders');
