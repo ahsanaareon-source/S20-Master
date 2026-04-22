@@ -85,6 +85,41 @@ export default function MajorWorksDetail({ work, onBack, onUpdateWork, isEditMod
         return 'bg-secondary';
     }
   };
+
+  const formatAuditTrailTime = (value?: string | null) => {
+    const fallbackTime = new Date().toLocaleTimeString('en-GB', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    });
+
+    if (!value) {
+      return fallbackTime;
+    }
+
+    const normalizedValue = value.trim().toLowerCase();
+    if (normalizedValue === 'just now') {
+      return fallbackTime;
+    }
+
+    const parsedDate = new Date(value);
+    if (!Number.isNaN(parsedDate.getTime())) {
+      return parsedDate.toLocaleTimeString('en-GB', {
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      });
+    }
+
+    const timeMatch = value.match(/(\d{1,2}):(\d{2})/);
+    if (timeMatch) {
+      const hours = timeMatch[1].padStart(2, '0');
+      const minutes = timeMatch[2];
+      return `${hours}:${minutes}`;
+    }
+
+    return fallbackTime;
+  };
   
   // Additional CDM checkboxes for Notice of intention stage
   const [cdmAdditionalChecks, setCdmAdditionalChecks] = useState({
@@ -202,6 +237,21 @@ export default function MajorWorksDetail({ work, onBack, onUpdateWork, isEditMod
     }
   ]);
   const visibleComments = comments.filter(comment => !comment.archivedAt);
+  const parseActivityTimestamp = (value?: string) => {
+    if (!value) return 0;
+    const direct = new Date(value);
+    if (!Number.isNaN(direct.getTime())) {
+      return direct.getTime();
+    }
+    const match = value.match(/(\d{1,2})\/(\d{1,2})\/(\d{4}),?\s*(\d{1,2}):(\d{2})/);
+    if (!match) return 0;
+    const [, day, month, year, hour, minute] = match;
+    return new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute)).getTime();
+  };
+  const activityComments = useMemo(
+    () => [...visibleComments].sort((a, b) => parseActivityTimestamp(b.timestamp) - parseActivityTimestamp(a.timestamp)),
+    [visibleComments]
+  );
   const [pendingArchiveCommentId, setPendingArchiveCommentId] = useState<number | null>(null);
   const [stageProgressWarning, setStageProgressWarning] = useState<{
     blockedStageName: string;
@@ -1024,6 +1074,14 @@ Signed: [Name]
 For and on behalf of: [Landlord / Manager / Authorised Agent]
 Date of notice: [Insert date]`;
 
+  const normalizeConsultationDocumentType = (documentName: string, documentType: string) => {
+    const normalizedName = String(documentName || '').toLowerCase();
+    if (normalizedName.includes('notice')) {
+      return 'Notice';
+    }
+    return documentType;
+  };
+
   const withConsultationDefaults = (document: any) => {
     if (document.category !== 'consultation') {
       return document;
@@ -1031,6 +1089,7 @@ Date of notice: [Insert date]`;
 
     return {
       ...document,
+      type: normalizeConsultationDocumentType(document.name, document.type),
       templateId: document.templateId || `template-${String(document.id)}`,
       templateName: document.templateName || getDefaultConsultationTemplateName(document.name),
       body: document.body || getDefaultConsultationBody(document.name, document.stage),
@@ -2531,6 +2590,26 @@ Date of notice: [Insert date]`;
     return 0;
   });
 
+  const documentObservationSummary = useMemo(() => {
+    return observations.reduce<Record<string, { total: number; unresolved: number }>>((acc, observation) => {
+      const key = String(observation.documentId ?? '');
+      if (!key) {
+        return acc;
+      }
+
+      if (!acc[key]) {
+        acc[key] = { total: 0, unresolved: 0 };
+      }
+
+      acc[key].total += 1;
+      if (observation.status !== 'addressed') {
+        acc[key].unresolved += 1;
+      }
+
+      return acc;
+    }, {});
+  }, [observations]);
+
   const handleObservationCreate = (
     document: { id: number | string; name: string; stage?: string },
     form: ObservationFormState
@@ -2640,10 +2719,16 @@ Date of notice: [Insert date]`;
       return;
     }
     
+    const normalizedDocumentName = data.documentName || 'Untitled Document';
+    const normalizedDocumentType = normalizeConsultationDocumentType(
+      normalizedDocumentName,
+      data.documentType.charAt(0).toUpperCase() + data.documentType.slice(1)
+    );
+
     const baseDocument = {
       id: documents.length + 1,
-      name: data.documentName || 'Untitled Document',
-      type: data.documentType.charAt(0).toUpperCase() + data.documentType.slice(1),
+      name: normalizedDocumentName,
+      type: normalizedDocumentType,
       lastUpdated: new Date().toLocaleDateString('en-GB', { 
         day: '2-digit', 
         month: '2-digit', 
@@ -4657,7 +4742,48 @@ Date of notice: [Insert date]`;
                         }}
                       >
                         {visibleDocColumns.documentName && (
-                          <td className="border-0 border-bottom py-3" style={{ whiteSpace: 'nowrap', paddingLeft: '1rem', paddingRight: '0.75rem' }}>{doc.name}</td>
+                          <td className="border-0 border-bottom py-3" style={{ paddingLeft: '1rem', paddingRight: '0.75rem' }}>
+                            <div style={{ whiteSpace: 'nowrap' }}>{doc.name}</div>
+                            {documentSegment === 'consultation' && String(doc.type || '').toLowerCase() === 'notice' && (() => {
+                              const observationInfo = documentObservationSummary[String(doc.id)];
+                              if (!observationInfo || observationInfo.total === 0) {
+                                return null;
+                              }
+
+                              return (
+                                <div className="d-flex flex-wrap align-items-center gap-2 mt-1">
+                                  <span
+                                    className="badge"
+                                    style={{
+                                      backgroundColor: '#eff6ff',
+                                      color: '#0b81c5',
+                                      border: '1px solid #bedbff',
+                                      fontSize: '11px',
+                                      fontWeight: 600,
+                                      padding: '3px 8px'
+                                    }}
+                                  >
+                                    Responses {observationInfo.total}
+                                  </span>
+                                  {observationInfo.unresolved > 0 && (
+                                    <span
+                                      className="badge"
+                                      style={{
+                                        backgroundColor: '#fff7ed',
+                                        color: '#ca3500',
+                                        border: '1px solid #ffd6a7',
+                                        fontSize: '11px',
+                                        fontWeight: 600,
+                                        padding: '3px 8px'
+                                      }}
+                                    >
+                                      New {observationInfo.unresolved}
+                                    </span>
+                                  )}
+                                </div>
+                              );
+                            })()}
+                          </td>
                         )}
                         {visibleDocColumns.type && (
                           <td className="border-0 border-bottom py-3" style={{ whiteSpace: 'nowrap', paddingLeft: '0.75rem', paddingRight: '0.75rem' }}>{doc.type}</td>
@@ -5186,18 +5312,18 @@ Date of notice: [Insert date]`;
                     <Clock size={14} className="text-muted" />
                     <span className="text-muted small fw-medium">Today</span>
                   </div>
-                  <span className="text-muted small">{documents.length + comments.length > 0 ? documents.length + comments.length + 1 : 1} activit{documents.length + comments.length > 0 ? 'ies' : 'y'}</span>
+                  <span className="text-muted small">{documents.length + activityComments.length > 0 ? documents.length + activityComments.length + 1 : 1} activit{documents.length + activityComments.length > 0 ? 'ies' : 'y'}</span>
                 </div>
                 
                 <div className="px-4 py-3">
                   {/* Comments Activities */}
-                  {comments.length > 0 && (
+                  {activityComments.length > 0 && (
                     <>
-                      {comments.map((comment, commentIndex) => (
+                      {activityComments.map((comment, commentIndex) => (
                         <div key={comment.id} className="d-flex gap-3 mb-4 position-relative">
                           <div className="d-flex flex-column align-items-center" style={{ width: '24px' }}>
                             <div className="rounded-circle d-flex align-items-center justify-center" style={{ width: '8px', height: '8px', backgroundColor: '#10b981' }}></div>
-                            {(commentIndex < comments.length - 1 || documents.length > 0) && (
+                            {(commentIndex < activityComments.length - 1 || documents.length > 0) && (
                               <div style={{ width: '2px', height: '100%', backgroundColor: '#e5e7eb', position: 'absolute', top: '8px', left: '12px' }}></div>
                             )}
                           </div>
@@ -5212,7 +5338,7 @@ Date of notice: [Insert date]`;
                                   Archived
                                 </span>
                               )}
-                              <span className="ms-auto text-muted small">{comment.timestamp}</span>
+                              <span className="ms-auto text-muted small">{formatAuditTrailTime(comment.timestamp)}</span>
                             </div>
                             <div className="mb-2">
                               <div className="d-flex align-items-center gap-2 mb-1">
@@ -5264,7 +5390,7 @@ Date of notice: [Insert date]`;
                               <FileText size={12} className="me-1" style={{ display: 'inline-block', verticalAlign: 'middle' }} />
                               <span style={{ verticalAlign: 'middle' }}>Documents Added</span>
                             </span>
-                            <span className="ms-auto text-muted small">Just now</span>
+                            <span className="ms-auto text-muted small">{formatAuditTrailTime('Just now')}</span>
                           </div>
                           <div className="mb-2">
                             <div className="d-flex align-items-center gap-2 mb-1">
@@ -5301,7 +5427,7 @@ Date of notice: [Insert date]`;
                         <span className="badge" style={{ backgroundColor: '#eff6ff', color: '#0b81c5', border: '1px solid #bedbff', fontSize: '12px', padding: '4px 10px', fontWeight: '500' }}>
                           {work.title}
                         </span>
-                        <span className="ms-auto text-muted small">Just now</span>
+                        <span className="ms-auto text-muted small">{formatAuditTrailTime('Just now')}</span>
                       </div>
                       <div className="mb-2">
                         <div className="d-flex align-items-center gap-2 mb-1">
@@ -5378,7 +5504,7 @@ Date of notice: [Insert date]`;
           <div className="card border-0 shadow-sm">
             <div className="card-body p-0">
               {/* Today's Comments */}
-              {comments.length > 0 && (
+              {activityComments.length > 0 && (
                 <div className="border-bottom">
                   <div className="d-flex align-items-center justify-content-between px-3 py-2 bg-light">
                     <div className="d-flex align-items-center gap-2">
@@ -5386,13 +5512,13 @@ Date of notice: [Insert date]`;
                       <span className="text-muted small fw-medium">Today</span>
                     </div>
                     <button className="btn btn-link btn-sm text-muted text-decoration-none p-0">
-                      {comments.length} activit{comments.length !== 1 ? 'ies' : 'y'}
+                      {activityComments.length} activit{activityComments.length !== 1 ? 'ies' : 'y'}
                     </button>
                   </div>
                   
                   <div className="px-4 py-3">
-                    {comments.map((comment, commentIndex) => (
-                      <div key={comment.id} className={`d-flex gap-3 ${commentIndex < comments.length - 1 ? 'pb-4' : ''} position-relative`}>
+                    {activityComments.map((comment, commentIndex) => (
+                      <div key={comment.id} className={`d-flex gap-3 ${commentIndex < activityComments.length - 1 ? 'pb-4' : ''} position-relative`}>
                         <div className="d-flex flex-column align-items-center" style={{ width: '24px' }}>
                           <div className="rounded-circle d-flex align-items-center justify-center" style={{ width: '8px', height: '8px', backgroundColor: '#10b981' }}></div>
                           {commentIndex < comments.length - 1 && (
@@ -5410,7 +5536,7 @@ Date of notice: [Insert date]`;
                                 Archived
                               </span>
                             )}
-                            <span className="ms-auto text-muted small">{comment.timestamp}</span>
+                            <span className="ms-auto text-muted small">{formatAuditTrailTime(comment.timestamp)}</span>
                           </div>
                           <div className="mb-2">
                             <div className="d-flex align-items-center gap-2 mb-1">
@@ -5478,7 +5604,7 @@ Date of notice: [Insert date]`;
                         <span className="badge" style={{ backgroundColor: '#eff6ff', color: '#0b81c5', border: '1px solid #bedbff', fontSize: '12px', padding: '4px 10px', fontWeight: '500' }}>
                           Riverside Roof
                         </span>
-                        <span className="ms-auto text-muted small">7 days ago</span>
+                        <span className="ms-auto text-muted small">09:20</span>
                       </div>
                       <div className="mb-2">
                         <div className="d-flex align-items-center gap-2 mb-1">
@@ -5511,7 +5637,7 @@ Date of notice: [Insert date]`;
                         <span className="badge" style={{ backgroundColor: '#eff6ff', color: '#0b81c5', border: '1px solid #bedbff', fontSize: '12px', padding: '4px 10px', fontWeight: '500' }}>
                           Riverside Roof
                         </span>
-                        <span className="ms-auto text-muted small" style={{ whiteSpace: 'nowrap' }}>01 January '26<br/>01:30</span>
+                        <span className="ms-auto text-muted small">01:30</span>
                       </div>
                       <div className="mb-2">
                         <div className="d-flex align-items-center gap-2 mb-1">
@@ -5552,7 +5678,7 @@ Date of notice: [Insert date]`;
                         <span className="badge" style={{ backgroundColor: '#eff6ff', color: '#0b81c5', border: '1px solid #bedbff', fontSize: '12px', padding: '4px 10px', fontWeight: '500' }}>
                           Riverside Roof
                         </span>
-                        <span className="ms-auto text-muted small">13 hours ago</span>
+                        <span className="ms-auto text-muted small">08:10</span>
                       </div>
                       <div className="mb-2">
                         <div className="d-flex align-items-center gap-2 mb-1">
@@ -5584,7 +5710,7 @@ Date of notice: [Insert date]`;
                         <span className="badge" style={{ backgroundColor: '#eff6ff', color: '#0b81c5', border: '1px solid #bedbff', fontSize: '12px', padding: '4px 10px', fontWeight: '500' }}>
                           Riverside Roof
                         </span>
-                        <span className="ms-auto text-muted small" style={{ whiteSpace: 'nowrap' }}>14 hours ago<br/>12:04</span>
+                        <span className="ms-auto text-muted small">12:04</span>
                       </div>
                       <div className="mb-2">
                         <div className="d-flex align-items-center gap-2 mb-1">
@@ -5604,12 +5730,12 @@ Date of notice: [Insert date]`;
                 </div>
               </div>
 
-              {/* Date Group: 17 November 2025 */}
+              {/* Date Group: 3 December 2025 */}
               <div className="border-bottom">
                 <div className="d-flex align-items-center justify-content-between px-3 py-2 bg-light">
                   <div className="d-flex align-items-center gap-2">
                     <Clock size={14} className="text-muted" />
-                    <span className="text-muted small fw-medium">17 November 2025</span>
+                    <span className="text-muted small fw-medium">3 December 2025</span>
                   </div>
                   <button className="btn btn-link btn-sm text-muted text-decoration-none p-0">
                     3 activities
@@ -5632,7 +5758,7 @@ Date of notice: [Insert date]`;
                         <span className="badge" style={{ backgroundColor: '#eff6ff', color: '#0b81c5', border: '1px solid #bedbff', fontSize: '12px', padding: '4px 10px', fontWeight: '500' }}>
                           Riverside Roof
                         </span>
-                        <span className="ms-auto text-muted small">21 hours ago</span>
+                        <span className="ms-auto text-muted small">11:05</span>
                       </div>
                       <div className="mb-2">
                         <div className="d-flex align-items-center gap-2 mb-1">
@@ -5664,7 +5790,7 @@ Date of notice: [Insert date]`;
                         <span className="badge" style={{ backgroundColor: '#eff6ff', color: '#0b81c5', border: '1px solid #bedbff', fontSize: '12px', padding: '4px 10px', fontWeight: '500' }}>
                           Riverside Roof
                         </span>
-                        <span className="ms-auto text-muted small">Yesterday at 14:10</span>
+                        <span className="ms-auto text-muted small">14:10</span>
                       </div>
                       <div className="mb-2">
                         <div className="d-flex align-items-center gap-2 mb-1">
@@ -5705,7 +5831,7 @@ Date of notice: [Insert date]`;
                         <span className="badge" style={{ backgroundColor: '#eff6ff', color: '#0b81c5', border: '1px solid #bedbff', fontSize: '12px', padding: '4px 10px', fontWeight: '500' }}>
                           Riverside Roof
                         </span>
-                        <span className="ms-auto text-muted small">Yesterday at 21:14</span>
+                        <span className="ms-auto text-muted small">21:14</span>
                       </div>
                       <div className="mb-2">
                         <div className="d-flex align-items-center gap-2 mb-1">
@@ -5725,12 +5851,12 @@ Date of notice: [Insert date]`;
                 </div>
               </div>
 
-              {/* Date Group: 3 December 2025 */}
+              {/* Date Group: 17 November 2025 */}
               <div>
                 <div className="d-flex align-items-center justify-content-between px-3 py-2 bg-light">
                   <div className="d-flex align-items-center gap-2">
                     <Clock size={14} className="text-muted" />
-                    <span className="text-muted small fw-medium">3 December 2025</span>
+                    <span className="text-muted small fw-medium">17 November 2025</span>
                   </div>
                   <button className="btn btn-link btn-sm text-muted text-decoration-none p-0">
                     5 activities
@@ -5752,7 +5878,7 @@ Date of notice: [Insert date]`;
                         <span className="badge" style={{ backgroundColor: '#eff6ff', color: '#0b81c5', border: '1px solid #bedbff', fontSize: '12px', padding: '4px 10px', fontWeight: '500' }}>
                           Riverside Roof
                         </span>
-                        <span className="ms-auto text-muted small" style={{ whiteSpace: 'nowrap' }}>Tuesday at 13:31<br/>01:40</span>
+                        <span className="ms-auto text-muted small">13:31</span>
                       </div>
                       <div className="mb-2">
                         <div className="d-flex align-items-center gap-2 mb-1">
@@ -5783,7 +5909,7 @@ Date of notice: [Insert date]`;
                         <span className="badge" style={{ backgroundColor: '#eff6ff', color: '#0b81c5', border: '1px solid #bedbff', fontSize: '12px', padding: '4px 10px', fontWeight: '500' }}>
                           Riverside Roof
                         </span>
-                        <span className="ms-auto text-muted small" style={{ whiteSpace: 'nowrap' }}>Tuesday at 13:31<br/>01:40</span>
+                        <span className="ms-auto text-muted small">13:31</span>
                       </div>
                       <div className="mb-2">
                         <div className="d-flex align-items-center gap-2 mb-1">
