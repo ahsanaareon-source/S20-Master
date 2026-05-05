@@ -65,6 +65,9 @@ export default function MajorWorksDetail({ work, onBack, onUpdateWork, isEditMod
     exceeds500PersonDays: false,
     multipleTradesConcurrent: false
   });
+
+  const majorWorksDescription =
+    work.formData?.description || 'No description available';
   
   // Helper function for status badge color
   const getStatusBadgeClass = (status: string) => {
@@ -187,7 +190,24 @@ export default function MajorWorksDetail({ work, onBack, onUpdateWork, isEditMod
   const [showLinkIssueModal, setShowLinkIssueModal] = useState(false);
   const [issueSearchQuery, setIssueSearchQuery] = useState('');
   const [selectedIssuesToLink, setSelectedIssuesToLink] = useState<string[]>([]);
-  const [linkedIssues, setLinkedIssues] = useState<string[]>([]);
+  const [linkedIssues, setLinkedIssues] = useState<string[]>(() => {
+    if (work.isNew) {
+      return [];
+    }
+
+    if (Array.isArray((work as any).linkedIssues) && (work as any).linkedIssues.length > 0) {
+      return (work as any).linkedIssues;
+    }
+
+    const seededByWorkId: Record<string, string[]> = {
+      '1': ['1', '11', '19'],
+      '2': ['2', '8', '14'],
+      '3': ['3', '10', '13'],
+      '4': ['4', '6', '16']
+    };
+
+    return seededByWorkId[String(work.id)] || ['1', '11', '19'];
+  });
   
   const [comments, setComments] = useState([
     {
@@ -253,10 +273,21 @@ export default function MajorWorksDetail({ work, onBack, onUpdateWork, isEditMod
     [visibleComments]
   );
   const [pendingArchiveCommentId, setPendingArchiveCommentId] = useState<number | null>(null);
-  const [stageProgressWarning, setStageProgressWarning] = useState<{
-    blockedStageName: string;
-    incompleteCount: number;
-  } | null>(null);
+  const [stageProgressWarning, setStageProgressWarning] = useState<
+    | {
+        type: 'tasks';
+        blockedStageName: string;
+        incompleteCount: number;
+      }
+    | {
+        type: 'cooldown';
+        blockedStageName: string;
+        requiredDays: number;
+        remainingDays: number;
+        sentDate?: string;
+      }
+    | null
+  >(null);
   
   // Individual users for recipient selection
   const individualUsers = [
@@ -1082,6 +1113,130 @@ Date of notice: [Insert date]`;
     return documentType;
   };
 
+  const LEGAL_NOTICE_WAIT_DAYS = 30;
+  const LEGAL_NOTICE_RULES = [
+    {
+      stageIds: ['notice-intention'],
+      stageNames: ['notice of intention'],
+      documentStages: ['notice of intention'],
+      sentTaskId: 'noi-issued'
+    },
+    {
+      stageIds: ['statement-estimate'],
+      stageNames: ['statement of estimate'],
+      documentStages: ['statement of estimate'],
+      sentTaskId: 'statement-sent'
+    },
+    {
+      stageIds: ['notice-reasons'],
+      stageNames: ['notice of reasons', 'notice of award'],
+      documentStages: ['notice of reasons', 'notice of award'],
+      sentTaskId: 'issued-leaseholders'
+    }
+  ] as const;
+
+  const normalizeLookup = (value: string) => value.trim().toLowerCase().replace(/\s+/g, ' ');
+  const parseUkDate = (value?: string | null) => {
+    if (!value) return null;
+    const trimmed = value.trim();
+    const direct = new Date(trimmed);
+    if (!Number.isNaN(direct.getTime())) {
+      return direct;
+    }
+
+    const match = trimmed.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:,\s*(\d{1,2}):(\d{2}))?/);
+    if (!match) return null;
+
+    const [, day, month, year, hour = '0', minute = '0'] = match;
+    const parsed = new Date(Number(year), Number(month) - 1, Number(day), Number(hour), Number(minute));
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  };
+
+  const findLegalNoticeRule = (stageId: string, stageName?: string) => {
+    const normalizedStageId = normalizeLookup(stageId);
+    const normalizedStageName = normalizeLookup(stageName || '');
+    return LEGAL_NOTICE_RULES.find(rule =>
+      rule.stageIds.includes(normalizedStageId as (typeof rule.stageIds)[number]) ||
+      rule.stageNames.includes(normalizedStageName as (typeof rule.stageNames)[number])
+    );
+  };
+
+  const getRuleSentDate = (rule: (typeof LEGAL_NOTICE_RULES)[number], docs: any[]) => {
+    const matchingSentDates = docs
+      .filter(doc =>
+        doc.category === 'consultation' &&
+        normalizeLookup(String(doc.type || '')) === 'notice' &&
+        rule.documentStages.includes(normalizeLookup(String(doc.stage || '')) as (typeof rule.documentStages)[number]) &&
+        Boolean(doc.sentDate)
+      )
+      .map(doc => String(doc.sentDate));
+
+    if (matchingSentDates.length === 0) {
+      return null;
+    }
+
+    return matchingSentDates
+      .map(value => ({ value, parsed: parseUkDate(value) }))
+      .filter(item => item.parsed)
+      .sort((a, b) => (b.parsed as Date).getTime() - (a.parsed as Date).getTime())[0]?.value || matchingSentDates[0];
+  };
+
+  const getRemainingLegalWaitDays = (sentDateValue?: string | null) => {
+    if (!sentDateValue) {
+      return LEGAL_NOTICE_WAIT_DAYS;
+    }
+
+    const sentDate = parseUkDate(sentDateValue);
+    if (!sentDate) {
+      return LEGAL_NOTICE_WAIT_DAYS;
+    }
+
+    const dayMs = 24 * 60 * 60 * 1000;
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const startOfSentDay = new Date(sentDate);
+    startOfSentDay.setHours(0, 0, 0, 0);
+
+    const elapsedDays = Math.max(0, Math.floor((startOfToday.getTime() - startOfSentDay.getTime()) / dayMs));
+    return Math.max(0, LEGAL_NOTICE_WAIT_DAYS - elapsedDays);
+  };
+
+  const getNoticeSendPrerequisite = (targetStage?: string | null, docs: any[] = documents) => {
+    if (isDispensationWork) {
+      return null;
+    }
+
+    const normalizedTargetStage = normalizeLookup(String(targetStage || ''));
+    const prerequisiteRule =
+      normalizedTargetStage === 'statement of estimate'
+        ? LEGAL_NOTICE_RULES[0]
+        : normalizedTargetStage === 'notice of reasons' || normalizedTargetStage === 'notice of award'
+          ? LEGAL_NOTICE_RULES[1]
+          : null;
+
+    if (!prerequisiteRule) {
+      return null;
+    }
+
+    const sentDate = getRuleSentDate(prerequisiteRule, docs);
+    const remainingDays = getRemainingLegalWaitDays(sentDate);
+    if (remainingDays <= 0) {
+      return null;
+    }
+
+    return {
+      type: 'cooldown' as const,
+      blockedStageName:
+        prerequisiteRule.stageNames[0]
+          .split(' ')
+          .map(word => word.charAt(0).toUpperCase() + word.slice(1))
+          .join(' '),
+      requiredDays: LEGAL_NOTICE_WAIT_DAYS,
+      remainingDays,
+      sentDate: sentDate || undefined
+    };
+  };
+
   const withConsultationDefaults = (document: any) => {
     if (document.category !== 'consultation') {
       return document;
@@ -1174,10 +1329,10 @@ Date of notice: [Insert date]`;
     }
     
     // Default documents for existing projects
-    return [
+    const defaultExistingDocuments: any[] = [
       {
         id: 1,
-        name: 'Notice of intention',
+        name: 'Section 20 consultation cover letter',
         type: 'Letter',
         category: 'consultation',
         stage: 'Consultation',
@@ -1244,10 +1399,10 @@ Date of notice: [Insert date]`;
       type: 'Notice',
       category: 'consultation',
       stage: 'Notice of intention',
-      status: 'Sent',
+      status: (String(work.id) === '1' || String(work.id) === '8') ? 'Send now' : 'Sent',
       dueDate: '19/11/2025',
-      sentDate: '19/11/2025',
-      isOverdue: false,
+      sentDate: (String(work.id) === '1' || String(work.id) === '8') ? null : '19/11/2025',
+      isOverdue: (String(work.id) === '1' || String(work.id) === '8'),
       isDueSoon: false,
       recipients: [{ label: 'Leaseholders', count: 42 }],
       lastUpdated: '19/11/2025, 09:30',
@@ -1369,7 +1524,75 @@ Date of notice: [Insert date]`;
       category: 'project',
       lastUpdated: '05/11/2025, 09:30',
       lastUpdatedBy: 'Sarah Mitchell'
-    }].map(withConsultationDefaults);
+    }];
+
+    if (['1', '3', '8'].includes(String(work.id))) {
+      let nextId = defaultExistingDocuments.reduce((maxId, doc) => Math.max(maxId, Number(doc.id) || 0), 0) + 1;
+      const addDocument = (document: any) => {
+        if (
+          defaultExistingDocuments.some(
+            existing =>
+              existing.category === 'consultation' &&
+              normalizeLookup(String(existing.type || '')) === 'notice' &&
+              normalizeLookup(String(existing.stage || '')) === normalizeLookup(String(document.stage || ''))
+          )
+        ) {
+          return;
+        }
+
+        defaultExistingDocuments.push({
+          ...document,
+          id: nextId++
+        });
+      };
+
+      addDocument({
+        name: 'Statement of estimate',
+        type: 'Notice',
+        category: 'consultation',
+        stage: 'Statement of estimate',
+        status: String(work.id) === '3' ? 'Sent' : 'Draft',
+        dueDate: '24/11/2025',
+        sentDate: String(work.id) === '3' ? '24/11/2025' : null,
+        isOverdue: String(work.id) !== '3',
+        isDueSoon: false,
+        recipients: [{ label: 'Leaseholders', count: 42 }],
+        lastUpdated: '24/11/2025, 10:10',
+        lastUpdatedBy: 'Sarah Mitchell'
+      });
+
+      addDocument({
+        name: 'Notice of reasons',
+        type: 'Notice',
+        category: 'consultation',
+        stage: 'Notice of reasons',
+        status: String(work.id) === '3' ? 'Sent' : 'Draft',
+        dueDate: '30/11/2025',
+        sentDate: String(work.id) === '3' ? '30/11/2025' : null,
+        isOverdue: String(work.id) !== '3',
+        isDueSoon: false,
+        recipients: [{ label: 'Leaseholders', count: 42 }],
+        lastUpdated: '30/11/2025, 12:05',
+        lastUpdatedBy: 'James Cooper'
+      });
+
+      addDocument({
+        name: 'Notice of award',
+        type: 'Notice',
+        category: 'consultation',
+        stage: 'Notice of award',
+        status: String(work.id) === '3' ? 'Sent' : 'Draft',
+        dueDate: '04/12/2025',
+        sentDate: String(work.id) === '3' ? '04/12/2025' : null,
+        isOverdue: String(work.id) !== '3',
+        isDueSoon: false,
+        recipients: [{ label: 'Leaseholders', count: 42 }],
+        lastUpdated: '04/12/2025, 09:45',
+        lastUpdatedBy: 'Sarah Mitchell'
+      });
+    }
+
+    return defaultExistingDocuments.map(withConsultationDefaults);
   };
   
   const [documents, setDocuments] = useState(getInitialDocuments());
@@ -1578,7 +1801,6 @@ Date of notice: [Insert date]`;
     } else {
       // Check if this work should have delayed stages (only for IDs 1 and 8)
       const hasDelayedNotice = work.id === '1' || work.id === '8';
-      const hasDelayedTenders = work.id === '1'; // Only work ID 1 has delayed Tenders
       
       // Existing project stages
       return recalculateStageSequence([
@@ -1594,36 +1816,24 @@ Date of notice: [Insert date]`;
             isDelayed: true,
             deadline: {
               daysLeft: -5,
-              totalDays: 30
+              totalDays: LEGAL_NOTICE_WAIT_DAYS
             }
           } : {
             deadline: {
-              daysLeft: 30,
-              totalDays: 30
+              daysLeft: LEGAL_NOTICE_WAIT_DAYS,
+              totalDays: LEGAL_NOTICE_WAIT_DAYS
             }
           })
         },
         {
           id: 'tenders',
           name: 'Tenders',
-          status: isCompleted ? 'completed' : (hasDelayedNotice ? 'pending' : (hasDelayedTenders ? 'active' : 'active')),
+          status: isCompleted ? 'completed' : (hasDelayedNotice ? 'pending' : 'active'),
           tasks: [
             { id: 'tender-requested', label: 'Tender requested', completed: hasDelayedNotice ? false : true },
-            { id: 'contractor-identified', label: 'Preferred contractor identified', completed: isCompleted ? true : (hasDelayedTenders ? false : false) },
+            { id: 'contractor-identified', label: 'Preferred contractor identified', completed: isCompleted ? true : false },
             { id: 'tender-shared', label: 'Tender shared with the clients', completed: isCompleted ? true : false }
-          ],
-          ...(hasDelayedTenders ? {
-            isDelayed: true,
-            deadline: {
-              daysLeft: -3,
-              totalDays: 10
-            }
-          } : (!hasDelayedNotice && !isCompleted ? {
-            deadline: {
-              daysLeft: 7,
-              totalDays: 10
-            }
-          } : {}))
+          ]
         },
         {
           id: 'statement-estimate',
@@ -1636,7 +1846,7 @@ Date of notice: [Insert date]`;
           ],
           deadline: {
             daysLeft: 21,
-            totalDays: 30
+            totalDays: LEGAL_NOTICE_WAIT_DAYS
           }
         },
         {
@@ -1659,7 +1869,11 @@ Date of notice: [Insert date]`;
               label: 'Confirms contractor appointment', 
               completed: isCompleted ? true : false 
             }
-          ]
+          ],
+          deadline: {
+            daysLeft: LEGAL_NOTICE_WAIT_DAYS,
+            totalDays: LEGAL_NOTICE_WAIT_DAYS
+          }
         },
         {
           id: 'completion',
@@ -1676,6 +1890,9 @@ Date of notice: [Insert date]`;
   };
   
   const [stages, setStages] = useState<Stage[]>(getInitialStages());
+  useEffect(() => {
+    setStages(prev => applyLegalNoticeSyncToStages(prev, documents));
+  }, [documents]);
 
   const leaseholderObservations = useMemo(
     () => observations.filter(observation =>
@@ -2409,6 +2626,39 @@ Date of notice: [Insert date]`;
     setActiveTab(targetTab);
   };
 
+  const isDispensationWork = work.status === 'Dispensation';
+
+  const applyLegalNoticeSyncToStages = (stageList: Stage[], docs: any[]) =>
+    recalculateStageSequence(
+      stageList.map(stage => {
+        const legalRule = findLegalNoticeRule(stage.id, stage.name);
+        if (!legalRule) {
+          return stage;
+        }
+
+        const sentDate = getRuleSentDate(legalRule, docs);
+        const noticeSent = Boolean(sentDate);
+        const updatedTasks = stage.tasks
+          .map(task =>
+            task.id === legalRule.sentTaskId
+              ? { ...task, completed: noticeSent }
+              : task
+          );
+
+        const nextStage: Stage = {
+          ...stage,
+          tasks: updatedTasks
+        };
+
+        if (noticeSent) {
+          nextStage.isDelayed = false;
+          delete nextStage.deadline;
+        }
+
+        return nextStage;
+      })
+    );
+
   const toggleStage = (stageId: string) => {
     setExpandedStage(prev => prev === stageId ? null : stageId);
   };
@@ -2421,6 +2671,7 @@ Date of notice: [Insert date]`;
       const incompleteTasks = prevStage.tasks.filter(task => !task.completed);
       if (incompleteTasks.length > 0) {
         return {
+          type: 'tasks' as const,
           blockedStageName: prevStage.name,
           incompleteCount: incompleteTasks.length
         };
@@ -2429,7 +2680,31 @@ Date of notice: [Insert date]`;
     return null;
   };
 
+  const isTaskControlledByNoticeSend = (stageId: string, stageName: string, taskId: string) => {
+    if (isDispensationWork) {
+      return false;
+    }
+
+    const legalRule = findLegalNoticeRule(stageId, stageName);
+    return Boolean(legalRule && legalRule.sentTaskId === taskId);
+  };
+
   const toggleTask = (stageId: string, taskId: string) => {
+    const selectedStage = stages.find(stage => stage.id === stageId);
+    const legalRule = selectedStage ? findLegalNoticeRule(stageId, selectedStage.name) : undefined;
+    if (!isDispensationWork && legalRule && legalRule.sentTaskId === taskId) {
+      const sentDate = getRuleSentDate(legalRule, documents);
+      if (!sentDate) {
+        setStageProgressWarning({
+          type: 'cooldown',
+          blockedStageName: selectedStage?.name || 'Notice stage',
+          requiredDays: LEGAL_NOTICE_WAIT_DAYS,
+          remainingDays: LEGAL_NOTICE_WAIT_DAYS
+        });
+      }
+      return;
+    }
+
     const blockingStage = getBlockingPreviousStage(stageId);
     if (blockingStage) {
       setStageProgressWarning(blockingStage);
@@ -2794,13 +3069,32 @@ Date of notice: [Insert date]`;
   };
 
   const handleDocumentUpdate = (documentId: number | string, updates: any) => {
-    setDocuments(prev =>
-      prev.map(document =>
+    const currentDocument = documents.find(document => document.id === documentId);
+    const isMarkingAsSent =
+      Boolean(updates?.sentDate) &&
+      (updates?.status === 'Sent' || currentDocument?.status !== 'Sent');
+    const isNoticeDocument =
+      currentDocument?.category === 'consultation' &&
+      normalizeLookup(String(currentDocument?.type || '')) === 'notice';
+
+    if (isMarkingAsSent && isNoticeDocument) {
+      const prerequisiteBlock = getNoticeSendPrerequisite(currentDocument?.stage, documents);
+      if (prerequisiteBlock) {
+        setStageProgressWarning(prerequisiteBlock);
+        return;
+      }
+    }
+
+    setDocuments(prev => {
+      const nextDocuments = prev.map(document =>
         document.id === documentId
           ? { ...document, ...updates }
           : document
-      )
-    );
+      );
+
+      setStages(prevStages => applyLegalNoticeSyncToStages(prevStages, nextDocuments));
+      return nextDocuments;
+    });
     setSelectedDocument((prev: any) =>
       prev && prev.id === documentId
         ? { ...prev, ...updates }
@@ -2906,6 +3200,14 @@ Date of notice: [Insert date]`;
               {!isEditingTitle ? (
                 <>
                   <h2 className="mb-0">{editedTitle}</h2>
+                  <span
+                    className="d-inline-flex align-items-center text-muted"
+                    title={majorWorksDescription}
+                    aria-label={`Description for ${work.title}`}
+                    style={{ cursor: 'help' }}
+                  >
+                    <Info size={16} />
+                  </span>
                   {work.status && (
                     <span className={`badge ${getStatusBadgeClass(work.status)}`}>
                       {work.status}
@@ -3299,12 +3601,17 @@ Date of notice: [Insert date]`;
                     {stage.tasks.map((task) => (
                       <div key={task.id} className="col-md-4 mb-2">
                         <div className="form-check">
+                          {(() => {
+                            const isNoticeControlledTask = isTaskControlledByNoticeSend(stage.id, stage.name, task.id);
+                            return (
+                              <>
                           <input
                             className="form-check-input"
                             type="checkbox"
                             id={`${stage.id}-${task.id}`}
                             checked={task.completed}
                             onChange={() => toggleTask(stage.id, task.id)}
+                            disabled={isNoticeControlledTask}
                             style={{ width: '20px', height: '20px', marginTop: '0.15rem' }}
                           />
                           <label 
@@ -3318,7 +3625,15 @@ Date of notice: [Insert date]`;
                             }}
                           >
                             {task.label}
+                            {isNoticeControlledTask && (
+                              <span className="d-block text-muted small mt-1">
+                                Auto-updated when the matching notice is marked sent in Documents.
+                              </span>
+                            )}
                           </label>
+                              </>
+                            );
+                          })()}
                         </div>
                       </div>
                     ))}
@@ -4202,92 +4517,66 @@ Date of notice: [Insert date]`;
       {/* Other tabs content */}
       {activeTab === 'issues' && (
         <div>
-          {isNewWork ? (
-            /* Empty state for new works */
-            <div className="card border-0 shadow-sm">
-              <div className="card-body text-center py-5">
-                <div className="d-flex justify-content-center">
-                  <FileText size={64} className="text-muted mb-3 opacity-50" />
-                </div>
-                <h4 className="mb-3">No issues yet</h4>
-                <p className="text-muted mb-4">
-                  This major works project doesn't have any issues linked yet.
-                </p>
-                <button className="btn btn-primary d-flex align-items-center gap-2 mx-auto">
-                  <Plus size={18} />
-                  Link an issue
+          <div className="mb-4 d-flex justify-content-between align-items-center">
+            <h5 className="mb-0">Linked Issues</h5>
+            <div className="d-flex gap-2">
+              <button className="btn btn-outline-primary d-flex align-items-center gap-2">
+                <Plus size={18} />
+                Create Issue
+              </button>
+              {linkedIssues.length > 0 && (
+                <button
+                  className="btn d-flex align-items-center gap-2"
+                  onClick={() => setShowLinkIssueModal(true)}
+                  style={{ backgroundColor: '#0B81C5', color: 'white' }}
+                >
+                  <LinkIcon size={18} />
+                  Link Issue
                 </button>
-              </div>
+              )}
+            </div>
+          </div>
+
+          {linkedIssues.length === 0 ? (
+            <div className="d-flex flex-column align-items-center justify-content-center py-5 text-muted">
+              <LinkIcon size={48} className="mb-3 opacity-50" />
+              <p className="text-center">No issues linked to this project yet</p>
+              <p className="small text-center mb-3">Click "Link Issue" to manually associate issues with this major works</p>
+              <button
+                className="btn d-flex align-items-center gap-2"
+                onClick={() => setShowLinkIssueModal(true)}
+                style={{ backgroundColor: '#0B81C5', color: 'white' }}
+              >
+                <LinkIcon size={18} />
+                Link Issue
+              </button>
             </div>
           ) : (
-            <>
-              {/* Search and New Issue header */}
-              <div className="d-flex justify-content-between align-items-center mb-4 gap-3">
-                <div className="d-flex align-items-center" style={{ flex: 1, maxWidth: '600px' }}>
-                  <div className="input-group">
-                    <span className="input-group-text bg-white border-end-0">
-                      <Search size={18} className="text-muted" />
-                    </span>
-                    <input 
-                      type="text" 
-                      className="form-control border-start-0" 
-                      placeholder="Search issues"
-                      style={{ paddingLeft: '0' }}
-                    />
-                    <button className="btn btn-outline-secondary dropdown-toggle" type="button" data-bs-toggle="dropdown">
-                    </button>
+            <div className="list-group">
+              {linkedIssues.map((issueId) => {
+                const issue = allIssues.find(i => i.id === issueId);
+                if (!issue) return null;
+                return (
+                  <div key={issueId} className="list-group-item d-flex justify-content-between align-items-center">
+                    <div>
+                      <div className="fw-medium">{issue.title}</div>
+                      <small className="text-muted">{issue.issueRef} • {issue.building} • {issue.status}</small>
+                    </div>
+                    <div className="d-flex gap-2">
+                      <button className="btn btn-sm btn-outline-secondary" title="View issue">
+                        <LinkIcon size={16} />
+                      </button>
+                      <button
+                        className="btn btn-sm btn-outline-danger"
+                        onClick={() => handleUnlinkIssue(issueId)}
+                      >
+                        <XIcon size={16} />
+                      </button>
+                    </div>
                   </div>
-                </div>
-                <div className="d-flex gap-2">
-                  <button className="btn btn-outline-secondary d-flex align-items-center gap-2">
-                    <Plus size={18} />
-                    New issue
-                  </button>
-                  <button 
-                    className="btn btn-primary d-flex align-items-center gap-2"
-                    onClick={() => setShowLinkIssueModal(true)}
-                    style={{ backgroundColor: '#0B81C5', borderColor: '#0B81C5' }}
-                  >
-                    <LinkIcon size={18} />
-                    Link issues
-                  </button>
-                </div>
-              </div>
-
-              {/* Issues List */}
-              <div className="card border-0 shadow-sm">
-                <div className="card-body p-0">
-                  <div className="table-responsive">
-                    <table className="table table-hover mb-0">
-                      <tbody>
-                        {[...Array(10)].map((_, index) => (
-                          <tr key={index} style={{ cursor: 'pointer' }}>
-                            <td className="border-0 border-bottom py-3" style={{ width: '15%' }}>
-                              <div className="fw-medium">Ref: IS20366791</div>
-                              <div className="text-muted small">Raised: Mon 24 Nov</div>
-                            </td>
-                            <td className="border-0 border-bottom py-3" style={{ width: '30%' }}>
-                              <div className="fw-medium">Other (Flat roof)</div>
-                              <div className="text-muted small">17 Daylesford Grove, Burnham, SL1 5AX</div>
-                            </td>
-                            <td className="border-0 border-bottom py-3" style={{ width: '25%' }}>
-                              <div className="fw-medium">Reported</div>
-                              <div className="text-muted small">Raised today</div>
-                              <div className="text-muted small">Assigned to: (Unassigned)</div>
-                            </td>
-                            <td className="border-0 border-bottom py-3 text-end" style={{ width: '20%' }}>
-                              <span className="badge bg-danger" style={{ fontSize: '13px', padding: '6px 12px' }}>
-                                3 - Non-urgent (high)
-                              </span>
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              </div>
-            </>
+                );
+              })}
+            </div>
           )}
         </div>
       )}
@@ -5987,10 +6276,14 @@ Date of notice: [Insert date]`;
       />
       <ConfirmationModal
         show={stageProgressWarning !== null}
-        title="Previous stage still has open tasks"
+        title={stageProgressWarning?.type === 'cooldown' ? 'Legal waiting period not complete' : 'Previous stage still has open tasks'}
         message={
           stageProgressWarning
-            ? `${stageProgressWarning.blockedStageName} still has ${stageProgressWarning.incompleteCount} unchecked task${stageProgressWarning.incompleteCount === 1 ? '' : 's'}. Complete that stage before updating this one.`
+            ? stageProgressWarning.type === 'cooldown'
+              ? stageProgressWarning.sentDate
+                ? `${stageProgressWarning.blockedStageName} was sent on ${stageProgressWarning.sentDate}. You must wait ${stageProgressWarning.requiredDays} days before progressing. ${stageProgressWarning.remainingDays} day${stageProgressWarning.remainingDays === 1 ? '' : 's'} remaining.`
+                : `${stageProgressWarning.blockedStageName} requires a legal ${stageProgressWarning.requiredDays}-day wait period that starts only after the notice is marked sent.`
+              : `${stageProgressWarning.blockedStageName} still has ${stageProgressWarning.incompleteCount} unchecked task${stageProgressWarning.incompleteCount === 1 ? '' : 's'}. Complete that stage before updating this one.`
             : ''
         }
         confirmLabel="OK"
