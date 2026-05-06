@@ -259,7 +259,7 @@ export default function MajorWorksForm({ onCancel, onSubmit, initialData, mode =
     workType: 'major-works',
     workCategory: 'roof-repairs',
     urgencyLevel: 'standard',
-    projectStatus: 'On hold',
+    projectStatus: 'In progress',
     
     // Step 2 - Property, Budget & Consultation
     estate: 'burns-court',
@@ -512,6 +512,12 @@ export default function MajorWorksForm({ onCancel, onSubmit, initialData, mode =
     }
   };
 
+  const getProjectStatusLabel = (status: string) => {
+    if (status === 'In progress') return 'Active';
+    if (status === 'On hold') return 'On Hold';
+    return status;
+  };
+
   const buildingOptions: any = {
     'no-estate': ['Standalone Building A', 'Standalone Building B', 'Independent Tower', 'Single Property Unit'],
     'burns-court': ['Riverside Block', 'Parkview Block', 'Central Tower'],
@@ -619,7 +625,7 @@ export default function MajorWorksForm({ onCancel, onSubmit, initialData, mode =
             </h2>
             {mode === 'edit' && initialData?.status && (
               <span className={`badge ${getStatusBadgeClass(initialData.status)}`}>
-                {initialData.status}
+                {getProjectStatusLabel(initialData.status)}
               </span>
             )}
           </div>
@@ -882,7 +888,8 @@ export default function MajorWorksForm({ onCancel, onSubmit, initialData, mode =
                           value={formData.projectStatus}
                           onChange={(e) => handleChange('projectStatus', e.target.value)}
                         >
-                          <option value="On hold">On hold</option>
+                          <option value="In progress">Active</option>
+                          <option value="On hold">On Hold</option>
                           <option value="Cancelled">Cancelled</option>
                           <option value="Dispensation">Dispensation</option>
                         </select>
