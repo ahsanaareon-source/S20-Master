@@ -1142,9 +1142,22 @@ Date of notice: [Insert date]`;
   ] as const;
 
   const normalizeLookup = (value: string) => value.trim().toLowerCase().replace(/\s+/g, ' ');
-  const parseUkDate = (value?: string | null) => {
-    if (!value) return null;
+  const parseUkDate = (value?: string | Date | number | null) => {
+    if (value === null || value === undefined) return null;
+
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : value;
+    }
+
+    if (typeof value === 'number') {
+      const parsedNumberDate = new Date(value);
+      return Number.isNaN(parsedNumberDate.getTime()) ? null : parsedNumberDate;
+    }
+
+    if (typeof value !== 'string') return null;
+
     const trimmed = value.trim();
+    if (!trimmed) return null;
     const direct = new Date(trimmed);
     if (!Number.isNaN(direct.getTime())) {
       return direct;
@@ -1205,6 +1218,35 @@ Date of notice: [Insert date]`;
 
     const elapsedDays = Math.max(0, Math.floor((startOfToday.getTime() - startOfSentDay.getTime()) / dayMs));
     return Math.max(0, LEGAL_NOTICE_WAIT_DAYS - elapsedDays);
+  };
+
+  const getElapsedDaysSinceSent = (sentDateValue?: string | null) => {
+    if (!sentDateValue) {
+      return null;
+    }
+
+    const sentDate = parseUkDate(sentDateValue);
+    if (!sentDate) {
+      return null;
+    }
+
+    const dayMs = 24 * 60 * 60 * 1000;
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    const startOfSentDay = new Date(sentDate);
+    startOfSentDay.setHours(0, 0, 0, 0);
+
+    return Math.max(0, Math.floor((startOfToday.getTime() - startOfSentDay.getTime()) / dayMs));
+  };
+
+  const getNoticeElapsedDaysForTask = (stageId: string, stageName: string, taskId: string) => {
+    const rule = findLegalNoticeRule(stageId, stageName);
+    if (!rule || rule.sentTaskId !== taskId) {
+      return null;
+    }
+
+    const sentDate = getRuleSentDate(rule, documents);
+    return getElapsedDaysSinceSent(sentDate);
   };
 
   const getNoticeSendPrerequisite = (targetStage?: string | null, docs: any[] = documents) => {
@@ -2693,8 +2735,8 @@ Date of notice: [Insert date]`;
     setExpandedStage(prev => prev === stageId ? null : stageId);
   };
 
-  // Check if a stage can have its tasks checked (all previous stages must be completed)
-  const getBlockingPreviousStage = (stageId: string) => {
+  // Find previous stages with incomplete tasks (used only for completion close-out guard)
+  const getFirstIncompletePreviousStage = (stageId: string) => {
     const stageIndex = stages.findIndex(s => s.id === stageId);
     for (let i = 0; i < stageIndex; i++) {
       const prevStage = stages[i];
@@ -2710,6 +2752,16 @@ Date of notice: [Insert date]`;
     return null;
   };
 
+  const getLegalProgressionBlockForStage = (stageId: string) => {
+    if (stageId === 'statement-estimate') {
+      return getNoticeSendPrerequisite('statement of estimate', documents);
+    }
+    if (stageId === 'notice-reasons') {
+      return getNoticeSendPrerequisite('notice of reasons', documents);
+    }
+    return null;
+  };
+
   const isTaskControlledByNoticeSend = (stageId: string, stageName: string, taskId: string) => {
     if (isDispensationWork) {
       return false;
@@ -2720,6 +2772,18 @@ Date of notice: [Insert date]`;
   };
 
   const toggleTask = (stageId: string, taskId: string) => {
+    const currentStage = stages.find(stage => stage.id === stageId);
+    const currentTask = currentStage?.tasks.find(task => task.id === taskId);
+    const isChecking = !currentTask?.completed;
+
+    if (isChecking) {
+      const legalProgressionBlock = getLegalProgressionBlockForStage(stageId);
+      if (legalProgressionBlock) {
+        setStageProgressWarning(legalProgressionBlock);
+        return;
+      }
+    }
+
     const selectedStage = stages.find(stage => stage.id === stageId);
     const legalRule = selectedStage ? findLegalNoticeRule(stageId, selectedStage.name) : undefined;
     if (!isDispensationWork && legalRule && legalRule.sentTaskId === taskId) {
@@ -2735,10 +2799,12 @@ Date of notice: [Insert date]`;
       return;
     }
 
-    const blockingStage = getBlockingPreviousStage(stageId);
-    if (blockingStage) {
-      setStageProgressWarning(blockingStage);
-      return;
+    if (isChecking && stageId === 'completion' && taskId === 'issues-closed') {
+      const blockingStage = getFirstIncompletePreviousStage(stageId);
+      if (blockingStage) {
+        setStageProgressWarning(blockingStage);
+        return;
+      }
     }
 
     setStages(prev =>
@@ -2763,9 +2829,9 @@ Date of notice: [Insert date]`;
 
   // Handler for CDM additional checkboxes with stage validation
   const toggleCdmCheck = (stageId: string, checkName: string, currentValue: boolean) => {
-    const blockingStage = getBlockingPreviousStage(stageId);
-    if (blockingStage) {
-      setStageProgressWarning(blockingStage);
+    const legalProgressionBlock = getLegalProgressionBlockForStage(stageId);
+    if (legalProgressionBlock) {
+      setStageProgressWarning(legalProgressionBlock);
       return;
     }
 
@@ -2834,7 +2900,7 @@ Date of notice: [Insert date]`;
     }
 
     // Status filter (only for consultation documents)
-    if (documentSegment === 'consultation' && statusFilter !== 'All statuses' && doc.status !== statusFilter) {
+    if (documentSegment === 'consultation' && statusFilter !== 'All statuses' && getDocumentStatusLabel(doc) !== statusFilter) {
       return false;
     }
 
@@ -2867,8 +2933,8 @@ Date of notice: [Insert date]`;
         bValue = b.stage ? b.stage.toLowerCase() : '';
         break;
       case 'status':
-        aValue = a.status ? a.status.toLowerCase() : '';
-        bValue = b.status ? b.status.toLowerCase() : '';
+        aValue = getDocumentStatusLabel(a).toLowerCase();
+        bValue = getDocumentStatusLabel(b).toLowerCase();
         break;
       case 'dueDate':
         aValue = a.dueDate;
@@ -3132,20 +3198,23 @@ Date of notice: [Insert date]`;
     );
   };
 
+  function getDocumentStatusLabel(doc: any) {
+    if (doc?.sentDate) return 'Sent';
+    if (doc?.isOverdue) return 'Overdue';
+    if (doc?.isDueSoon) return 'Due soon';
+    return 'Draft';
+  }
+
   const getStatusBadgeStyle = (status: string) => {
     switch (status) {
-      case 'Send now': 
-        return { backgroundColor: '#fce8ec', color: '#b91c1c', borderRadius: '16px' };
       case 'Sent': 
         return { backgroundColor: '#d1f4e0', color: '#15803d', borderRadius: '16px' };
-      case 'Ready to send': 
-        return { backgroundColor: '#dbeafe', color: '#1e40af', borderRadius: '16px' };
+      case 'Overdue': 
+        return { backgroundColor: '#fce8ec', color: '#b91c1c', borderRadius: '16px' };
+      case 'Due soon': 
+        return { backgroundColor: '#fef3c7', color: '#b45309', borderRadius: '16px' };
       case 'Draft': 
         return { backgroundColor: '#e5e7eb', color: '#4b5563', borderRadius: '16px' };
-      case 'Awaiting approval': 
-        return { backgroundColor: '#fef3c7', color: '#b45309', borderRadius: '16px' };
-      case 'Postal pack generated':
-        return { backgroundColor: '#e0f2fe', color: '#075985', borderRadius: '16px' };
       default: 
         return { backgroundColor: '#e5e7eb', color: '#4b5563', borderRadius: '16px' };
     }
@@ -3557,6 +3626,14 @@ Date of notice: [Insert date]`;
                       </>
                     )}
                     
+                    {(() => {
+                      const stageNoticeTask = stage.tasks.find(task => getNoticeElapsedDaysForTask(stage.id, stage.name, task.id) !== null);
+                      const stageElapsedDaysSinceIssued = stageNoticeTask
+                        ? getNoticeElapsedDaysForTask(stage.id, stage.name, stageNoticeTask.id)
+                        : null;
+
+                      return (
+                        <>
                     {stage.tasks.map((task) => (
                       <div key={task.id} className="col-md-4 mb-2">
                         <div className="form-check">
@@ -3596,6 +3673,16 @@ Date of notice: [Insert date]`;
                         </div>
                       </div>
                     ))}
+                    {stageElapsedDaysSinceIssued !== null && (
+                      <div className="col-12 mb-3">
+                        <div className="alert alert-info py-2 px-3 mb-0" role="alert" style={{ fontSize: '14px', fontWeight: 600 }}>
+                          Issued {String(stageElapsedDaysSinceIssued).padStart(2, '0')} {stageElapsedDaysSinceIssued === 1 ? 'day' : 'days'} ago
+                        </div>
+                      </div>
+                    )}
+                        </>
+                      );
+                    })()}
                     
                     {/* Additional CDM checkboxes for Notice of reasons stage */}
                     {stage.id === 'notice-reasons' && (Object.values(cdmReasons).some(v => v)) && (
@@ -4651,10 +4738,9 @@ Date of notice: [Insert date]`;
                         >
                           <option>All statuses</option>
                           <option>Sent</option>
-                          <option>Ready to send</option>
+                          <option>Overdue</option>
+                          <option>Due soon</option>
                           <option>Draft</option>
-                          <option>Awaiting approval</option>
-                          <option>Send now</option>
                         </select>
                       </div>
                     )}
@@ -5044,7 +5130,7 @@ Date of notice: [Insert date]`;
                           <td className="border-0 border-bottom py-3" style={{ paddingLeft: '0.75rem', paddingRight: '0.75rem' }}>
                             <span 
                               style={{ 
-                                ...getStatusBadgeStyle(doc.status),
+                                ...getStatusBadgeStyle(getDocumentStatusLabel(doc)),
                                 fontSize: '12px', 
                                 padding: '6px 14px',
                                 fontWeight: '600',
@@ -5052,42 +5138,13 @@ Date of notice: [Insert date]`;
                                 whiteSpace: 'nowrap'
                               }}
                             >
-                              {doc.status}
+                              {getDocumentStatusLabel(doc)}
                             </span>
                           </td>
                         )}
                         {visibleDocColumns.dueToSendOn && documentSegment === 'consultation' && (
                           <td className="border-0 border-bottom py-3" style={{ paddingLeft: '0.75rem', paddingRight: '0.75rem' }}>
                             <div style={{ fontSize: '14px', whiteSpace: 'nowrap' }}>{doc.dueDate}</div>
-                            {doc.isOverdue && (
-                              <span 
-                                className="badge bg-danger mt-1" 
-                                style={{ 
-                                  fontSize: '10px', 
-                                  padding: '3px 6px',
-                                  fontWeight: '500',
-                                  borderRadius: '3px',
-                                  whiteSpace: 'nowrap'
-                                }}
-                              >
-                                Overdue
-                              </span>
-                            )}
-                            {doc.isDueSoon && !doc.isOverdue && (
-                              <span 
-                                className="badge bg-warning mt-1" 
-                                style={{ 
-                                  fontSize: '10px', 
-                                  padding: '3px 6px',
-                                  fontWeight: '500',
-                                  borderRadius: '3px',
-                                  color: '#000',
-                                  whiteSpace: 'nowrap'
-                                }}
-                              >
-                                Due soon
-                              </span>
-                            )}
                           </td>
                         )}
                         {visibleDocColumns.sentOn && documentSegment === 'consultation' && (

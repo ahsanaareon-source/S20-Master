@@ -187,7 +187,7 @@ Date of notice: [Insert date]`
   const hasGeneratedPostalPack = Boolean(document.postalPackGeneratedAt);
   const hasEmailDelivery = Boolean(document.emailSentAt);
   const canGeneratePostalPack = isTemplateConsultationDocument && !isEditingTemplate;
-  const canMarkSent = !isProjectDocument && !document.sentDate;
+  const canMarkSent = !isProjectDocument;
   const isConsultationDocument = !isProjectDocument;
   const isNoticeDocumentType = normalizeDocumentKey(document.type) === 'notice';
   const isObservationDocument = isConsultationDocument && isNoticeDocumentType;
@@ -597,11 +597,6 @@ Date of notice: [Insert date]`
       return;
     }
 
-    const sentAt = new Date().toLocaleDateString('en-GB', {
-      day: '2-digit',
-      month: '2-digit',
-      year: 'numeric'
-    });
     const updatedAt = new Date().toLocaleString('en-GB', {
       day: '2-digit',
       month: '2-digit',
@@ -610,14 +605,29 @@ Date of notice: [Insert date]`
       minute: '2-digit'
     });
 
-    onUpdateDocument(document.id, {
-      status: 'Sent',
-      sentDate: sentAt,
-      isOverdue: false,
-      isDueSoon: false,
-      lastUpdated: updatedAt,
-      lastUpdatedBy: 'Ahsan Jalil'
-    });
+    if (document.sentDate) {
+      onUpdateDocument(document.id, {
+        status: 'Draft',
+        sentDate: null,
+        lastUpdated: updatedAt,
+        lastUpdatedBy: 'Ahsan Jalil'
+      });
+    } else {
+      const sentAt = new Date().toLocaleDateString('en-GB', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric'
+      });
+
+      onUpdateDocument(document.id, {
+        status: 'Sent',
+        sentDate: sentAt,
+        isOverdue: false,
+        isDueSoon: false,
+        lastUpdated: updatedAt,
+        lastUpdatedBy: 'Ahsan Jalil'
+      });
+    }
 
     setShowMarkSentModal(false);
   };
@@ -1888,13 +1898,13 @@ Date of notice: [Insert date]`
                 <div className="d-flex gap-2 w-100 justify-content-start">
                   {!isProjectDocument && (
                     <button
-                      className="btn btn-primary d-flex align-items-center gap-2"
+                      className={`btn d-flex align-items-center gap-2 ${document.sentDate ? 'btn-success' : 'btn-primary'}`}
                       type="button"
                       onClick={() => setShowMarkSentModal(true)}
                       disabled={!canMarkSent}
                     >
                       <CheckCircle2 size={16} />
-                      {document.sentDate ? 'Sent' : 'Mark as sent'}
+                      {document.sentDate ? 'Marked sent' : 'Mark sent'}
                     </button>
                   )}
                   <button className="btn btn-outline-secondary d-flex align-items-center gap-2">
@@ -2049,18 +2059,20 @@ Date of notice: [Insert date]`
       )}
       <ConfirmationModal
         show={showMarkSentModal}
-        title="Mark document as sent?"
+        title={document.sentDate ? 'Unmark document as sent?' : 'Mark document as sent?'}
         message={
-          hasEmailDelivery && hasGeneratedPostalPack
-            ? 'Confirm that this document has now been issued using the completed delivery methods. This will mark the document as sent and record today as the sent date.'
-            : hasEmailDelivery
-              ? 'Confirm that this document has now been issued by email. This will mark the document as sent and record today as the sent date.'
-              : isTemplateConsultationDocument
-                ? 'Confirm that the generated postal pack has now been posted. This will mark the document as sent and record today as the sent date.'
-                : 'Confirm that this uploaded document has now been issued by email. This will mark the document as sent and record today as the sent date.'
+          document.sentDate
+            ? 'This will return the document to Draft.'
+            : hasEmailDelivery && hasGeneratedPostalPack
+              ? 'Confirm that this document has now been issued using the completed delivery methods. This will mark the document as sent and record today as the sent date.'
+              : hasEmailDelivery
+                ? 'Confirm that this document has now been issued by email. This will mark the document as sent and record today as the sent date.'
+                : isTemplateConsultationDocument
+                  ? 'Confirm that the generated postal pack has now been posted. This will mark the document as sent and record today as the sent date.'
+                  : 'Confirm that this uploaded document has now been issued by email. This will mark the document as sent and record today as the sent date.'
         }
         variant="info"
-        confirmLabel="Mark as sent"
+        confirmLabel={document.sentDate ? 'Remove sent mark' : 'Mark sent'}
         cancelLabel="Cancel"
         onCancel={() => setShowMarkSentModal(false)}
         onConfirm={handleMarkAsSent}
