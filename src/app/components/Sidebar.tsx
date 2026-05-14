@@ -215,7 +215,7 @@ export default function Sidebar({ activePage, onNavigate, isCollapsed, onToggleC
                     }
                   }}
                 >
-                  <span className="me-2" style={{ fontSize: '10px' }}>○</span>Major works
+                  <span className="me-2" style={{ fontSize: '10px' }}>○</span>Section 20
                   <span className="badge bg-primary ms-2" style={{ fontSize: '10px' }}>New</span>
                 </a>
               </div>
@@ -266,7 +266,7 @@ export default function Sidebar({ activePage, onNavigate, isCollapsed, onToggleC
                   href="#" 
                   onClick={(e) => { e.preventDefault(); onNavigate('major-works'); }}
                 >
-                  <span className="me-2" style={{ fontSize: '10px' }}>○</span>Major works
+                  <span className="me-2" style={{ fontSize: '10px' }}>○</span>Section 20
                   <span className="badge bg-primary ms-2" style={{ fontSize: '10px' }}>New</span>
                 </a>
               </div>
